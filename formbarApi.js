@@ -34,7 +34,7 @@ function transferDigipogs(socket, fromUserId, toUserId, amount, memo, pin, isPoo
             to: toUserId,
             amount: amount,
             pin: pinNumber, // Must be a number!
-            reason: memo || 'Credit Pog transfer'
+            reason: 'Formbank: ' + memo || 'FormBank transfer'
         };
 
         // Only set pool: true if transferring to a pool

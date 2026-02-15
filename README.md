@@ -1,6 +1,6 @@
-# Credit Pog
+# FormBank
 
-**Credit Pog** is a digipog loan and check-writing app that integrates with [Formbar](https://github.com/csmith1188/Formbar.js). It provides credit/loan management and peer-to-peer checks for the York County School of Technology (York Tech) ecosystem. Students can borrow digipogs, repay loans, and write checks to other users (or leave checks open for anyone to redeem).
+**FormBank** is a digipog loan and check-writing app that integrates with [Formbar](https://github.com/csmith1188/Formbar.js). It provides credit/loan management and peer-to-peer checks for the York County School of Technology (York Tech) ecosystem. Students can borrow digipogs, repay loans, and write checks to other users (or leave checks open for anyone to redeem).
 
 ## Features
 

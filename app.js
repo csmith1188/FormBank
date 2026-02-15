@@ -249,21 +249,6 @@ app.get('/logout', (req, res) => {
     res.redirect('/login');
 });
 
-app.get('/sendpogs', isAuthenticated, (req, res) => {
-    const data = {
-        from: 1,
-        to: 1,
-        amount: 100,
-        pin: 3639,
-        pool: true,
-        reason: 'Test pogs transfer'
-    };
-
-    socket.emit('transferDigipogs', data);
-
-    res.send('Pogs sent!');
-});
-
 // Credit routes
 app.get('/credit', isAuthenticated, (req, res) => {
     const userId = req.session.userId;
@@ -350,7 +335,7 @@ app.post('/credit/borrow', isAuthenticated, async (req, res) => {
                     LENDER_USER_ID,
                     userId,
                     principal,
-                    `Credit Pog loan: ${principal} digipogs`,
+                    `FormBank loan: ${principal} digipogs`,
                     LENDER_PIN
                 ).then(result => {
                     if (!result.success) {
@@ -456,7 +441,7 @@ app.post('/credit/repay', isAuthenticated, async (req, res) => {
                         userId,
                         LENDER_USER_ID,
                         actualTransferNeeded,
-                        `Credit Pog loan repayment: ${actualTransferNeeded} digipogs`,
+                        `FormBank loan repayment: ${actualTransferNeeded} digipogs`,
                         borrowerPin
                     ).then(result => {
                         if (!result.success) {
@@ -599,7 +584,7 @@ app.post('/credit/repay/full', isAuthenticated, async (req, res) => {
                         userId,
                         LENDER_USER_ID,
                         transferNeeded,
-                        `Credit Pog loan full repayment: ${transferNeeded} digipogs`,
+                        `FormBank loan full repayment: ${transferNeeded} digipogs`,
                         borrowerPin
                     ).then(result => {
                         if (!result.success) {
