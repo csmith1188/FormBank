@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Credit Pog - <%= user %></title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #2E7D32 0%, #1B5E20 50%, #0D3D10 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .header h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .stat-card h3 {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .stat-card .value {
+            font-size: 32px;
+            font-weight: bold;
+            color: #2E7D32;
+        }
+        .section {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .section h2 {
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #2E7D32;
+        }
+        .loan-details {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .loan-details p {
+            margin: 8px 0;
+            color: #555;
+        }
+        .loan-details strong {
+            color: #333;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #333;
+            font-weight: 500;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: #2E7D32;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-right: 10px;
+            margin-top: 10px;
+        }
+        .btn-primary {
+            background: #2E7D32;
+            color: white;
+        }
+        .btn-primary:hover {
+            background: #1B5E20;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(46, 125, 50, 0.4);
+        }
+        .btn-success {
+            background: #48bb78;
+            color: white;
+        }
+        .btn-success:hover {
+            background: #38a169;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(72, 187, 120, 0.3);
+        }
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .alert {
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+        .alert-info {
+            background: #E8F5E9;
+            color: #1B5E20;
+            border-left: 4px solid #2E7D32;
+        }
+        .alert-warning {
+            background: #fefcbf;
+            color: #744210;
+            border-left: 4px solid #d69e2e;
+        }
+        .alert-success {
+            background: #c6f6d5;
+            color: #22543d;
+            border-left: 4px solid #48bb78;
+        }
+        .alert-error {
+            background: #fed7d7;
+            color: #742a2a;
+            border-left: 4px solid #e53e3e;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #333;
+        }
+        tr:hover {
+            background: #f8f9fa;
+        }
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            display: inline-block;
+        }
+        .status-active {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+        .status-paid {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+        .message {
+            margin-top: 15px;
+            padding: 12px;
+            border-radius: 6px;
+            display: none;
+        }
+        .message.show {
+            display: block;
+        }
+        .nav-link {
+            color: #2E7D32;
+            text-decoration: none;
+            margin-left: 20px;
+        }
+        .nav-link:hover {
+            color: #1B5E20;
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Credit Pog System</h1>
+            <p>Welcome, <strong><%= user %></strong> | <a href="/" class="nav-link">Home</a> <a href="/checks" class="nav-link">Checks</a> <a href="/logout" class="nav-link">Logout</a></p>
+        </div>
+
+        <div class="stats">
+            <div class="stat-card">
+                <h3>Credit Limit</h3>
+                <div class="value"><%= creditLimit %></div>
+            </div>
+            <div class="stat-card">
+                <h3>Credit Balance</h3>
+                <div class="value"><%= creditBalance %></div>
+            </div>
+            <% if (activeLoan) { %>
+            <div class="stat-card">
+                <h3>Remaining Owed</h3>
+                <div class="value"><%= activeLoan.amount_owed - activeLoan.amount_paid %></div>
+            </div>
+            <% } %>
+        </div>
+
+        <% if (activeLoan) { %>
+        <div class="section">
+            <h2>Active Loan</h2>
+            <div class="loan-details">
+                <p><strong>Principal:</strong> <%= activeLoan.principal %> digipogs</p>
+                <p><strong>Interest Rate:</strong> <%= (activeLoan.interest_rate * 100).toFixed(0) %>%</p>
+                <p><strong>Total Owed:</strong> <%= activeLoan.amount_owed %> digipogs</p>
+                <p><strong>Amount Paid:</strong> <%= activeLoan.amount_paid %> digipogs</p>
+                <p><strong>Remaining:</strong> <strong style="color: #e53e3e;"><%= activeLoan.amount_owed - activeLoan.amount_paid %> digipogs</strong></p>
+                <p><strong>Loan Date:</strong> <%= new Date(activeLoan.created_at).toLocaleDateString() %></p>
+            </div>
+
+            <div class="alert alert-info">
+                <strong>Note:</strong> When you repay, Formbar applies a 10% tax. If you send R digipogs, the lender receives 0.9*R, but your loan balance decreases by R (the pre-tax amount you sent).
+            </div>
+
+            <h3 style="margin-top: 20px; margin-bottom: 15px;">Make a Payment</h3>
+            <form id="repayForm" onsubmit="return submitRepay(event)">
+                <div class="form-group">
+                    <label for="repayAmount">Repayment Amount (digipogs)</label>
+                    <input type="number" id="repayAmount" name="amount" min="1" required>
+                    <small style="color: #666;">Suggested: <%= activeLoan.amount_owed - activeLoan.amount_paid %> digipogs (full repayment)</small>
+                </div>
+                <div class="form-group">
+                    <label for="repayPin">PIN (if required for transfer)</label>
+                    <input type="text" id="repayPin" name="pin" placeholder="Optional">
+                </div>
+                <button type="submit" class="btn btn-success">Make Payment</button>
+                <button type="button" class="btn btn-primary" onclick="repayFull()">Pay Full Amount</button>
+            </form>
+            <div id="repayMessage" class="message"></div>
+        </div>
+        <% } else { %>
+        <div class="section">
+            <h2>Borrow Digipogs</h2>
+            <div class="alert alert-info">
+                <strong>Loan Terms:</strong> 20% interest per loan. When you borrow P digipogs, you receive 0.9*P (after 10% Formbar tax) but owe P*1.2. You can only have one active loan at a time.
+            </div>
+            <form id="borrowForm" onsubmit="return submitBorrow(event)">
+                <div class="form-group">
+                    <label for="borrowAmount">Loan Amount (digipogs)</label>
+                    <input type="number" id="borrowAmount" name="amount" min="1" max="<%= creditLimit %>" required>
+                    <small style="color: #666;">Maximum: <%= creditLimit %> digipogs</small>
+                </div>
+                <button type="submit" class="btn btn-primary">Request Loan</button>
+            </form>
+            <div id="borrowMessage" class="message"></div>
+        </div>
+        <% } %>
+
+        <div class="section">
+            <h2>Loan History</h2>
+            <% if (loanHistory && loanHistory.length > 0) { %>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Principal</th>
+                        <th>Total Owed</th>
+                        <th>Amount Paid</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <% loanHistory.forEach(loan => { %>
+                    <tr>
+                        <td><%= new Date(loan.created_at).toLocaleDateString() %></td>
+                        <td><%= loan.principal %> digipogs</td>
+                        <td><%= loan.amount_owed %> digipogs</td>
+                        <td><%= loan.amount_paid %> digipogs</td>
+                        <td>
+                            <span class="status-badge status-<%= loan.status %>">
+                                <%= loan.status.charAt(0).toUpperCase() + loan.status.slice(1) %>
+                            </span>
+                        </td>
+                    </tr>
+                    <% }); %>
+                </tbody>
+            </table>
+            <% } else { %>
+            <p style="color: #666;">No loan history yet.</p>
+            <% } %>
+        </div>
+    </div>
+
+    <script>
+        function showMessage(elementId, message, type) {
+            const element = document.getElementById(elementId);
+            element.textContent = message;
+            element.className = 'message show alert alert-' + type;
+            setTimeout(() => {
+                element.classList.remove('show');
+            }, 5000);
+        }
+
+        async function submitBorrow(event) {
+            event.preventDefault();
+            const form = event.target;
+            const formData = new FormData(form);
+            const amount = parseInt(formData.get('amount'));
+
+            if (amount <= 0 || amount > <%= creditLimit %>) {
+                showMessage('borrowMessage', 'Invalid loan amount', 'error');
+                return false;
+            }
+
+            try {
+                const response = await fetch('/credit/borrow', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ amount: amount })
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    showMessage('borrowMessage', data.message, 'success');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 2000);
+                } else {
+                    showMessage('borrowMessage', data.error || 'Failed to process loan', 'error');
+                }
+            } catch (error) {
+                showMessage('borrowMessage', 'Error: ' + error.message, 'error');
+            }
+            return false;
+        }
+
+        async function submitRepay(event) {
+            event.preventDefault();
+            const form = event.target;
+            const formData = new FormData(form);
+            const amount = parseInt(formData.get('amount'));
+            const pin = formData.get('pin') || '';
+
+            if (amount <= 0) {
+                showMessage('repayMessage', 'Invalid repayment amount', 'error');
+                return false;
+            }
+
+            try {
+                const response = await fetch('/credit/repay', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ amount: amount, pin: pin })
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    showMessage('repayMessage', data.message, 'success');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 2000);
+                } else {
+                    showMessage('repayMessage', data.error || 'Failed to process repayment', 'error');
+                }
+            } catch (error) {
+                showMessage('repayMessage', 'Error: ' + error.message, 'error');
+            }
+            return false;
+        }
+
+        async function repayFull() {
+            if (!confirm('Pay the full remaining balance?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/credit/repay/full', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ pin: document.getElementById('repayPin')?.value || '' })
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    showMessage('repayMessage', data.message, 'success');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 2000);
+                } else {
+                    showMessage('repayMessage', data.error || 'Failed to process full repayment', 'error');
+                }
+            } catch (error) {
+                showMessage('repayMessage', 'Error: ' + error.message, 'error');
+            }
+        }
+    </script>
+</body>
+</html>
+

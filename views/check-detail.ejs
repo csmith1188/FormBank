@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Credit Pog - Check #<%= check.id %> - <%= user %></title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #2E7D32 0%, #1B5E20 50%, #0D3D10 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 800px; margin: 0 auto; }
+        .header {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .header h1 { color: #333; margin-bottom: 10px; }
+        .nav-link { color: #2E7D32; text-decoration: none; margin-left: 20px; }
+        .nav-link:hover { color: #1B5E20; text-decoration: underline; }
+        .section {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .section h2 {
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #2E7D32;
+        }
+        .check-details {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .check-details p { margin: 8px 0; color: #555; }
+        .check-details strong { color: #333; }
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            display: inline-block;
+        }
+        .status-completed { background: #c6f6d5; color: #22543d; }
+        .status-failed { background: #fed7d7; color: #742a2a; }
+        .status-uncashed { background: #fefcbf; color: #744210; }
+        .qr-wrap {
+            margin-top: 20px;
+            padding: 20px;
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            display: inline-block;
+        }
+        .qr-wrap img { display: block; }
+        .qr-wrap p { margin-top: 10px; color: #666; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Check #<%= check.id %></h1>
+            <p>Welcome, <strong><%= user %></strong> | <a href="/" class="nav-link">Home</a> <a href="/credit" class="nav-link">Credit System</a> <a href="/checks" class="nav-link">Checks</a> <a href="/logout" class="nav-link">Logout</a></p>
+        </div>
+
+        <div class="section">
+            <h2>Check details</h2>
+            <div class="check-details">
+                <p><strong>From (sender):</strong> User #<%= check.sender_formbar_user_id %></p>
+                <p><strong>To (receiver):</strong> <% if (check.receiver_formbar_user_id != null) { %>User #<%= check.receiver_formbar_user_id %><% } else { %>Anyone (first to open this page redeems)<% } %></p>
+                <p><strong>Amount:</strong> <%= check.amount %> digipogs</p>
+                <p><strong>Fee charged:</strong> <%= check.fee_charged %> digipogs</p>
+                <p><strong>Status:</strong>
+                    <span class="status-badge status-<%= check.status %>">
+                        <%= check.status.charAt(0).toUpperCase() + check.status.slice(1) %>
+                    </span>
+                </p>
+                <p><strong>Date:</strong> <%= new Date(check.created_at).toLocaleString() %></p>
+                <% if (check.memo) { %>
+                <p><strong>Memo:</strong> <%= check.memo %></p>
+                <% } %>
+                <p><strong>Your role:</strong> <%= isSender ? 'Sender' : 'Receiver' %></p>
+            </div>
+
+            <% if (qrDataUrl) { %>
+            <div class="qr-wrap">
+                <img src="<%= qrDataUrl %>" alt="QR code for this check status page" width="200" height="200">
+                <p>Scan to open this status page on another device.</p>
+            </div>
+            <% } %>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,4 @@
+node_modules/
+.env
+db/database.db
+db/sessions.db

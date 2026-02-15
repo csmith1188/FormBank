@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Check #<%= check.id %> - <%= success ? 'Cashed' : 'Redeem failed' %></title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #2E7D32 0%, #1B5E20 50%, #0D3D10 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .card {
+            background: white;
+            padding: 32px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            max-width: 420px;
+            text-align: center;
+        }
+        .card h1 { color: #333; margin-bottom: 16px; font-size: 24px; }
+        .card p { color: #555; line-height: 1.6; margin-bottom: 12px; }
+        .success { color: #22543d; font-weight: 600; }
+        .failed { color: #742a2a; font-weight: 600; }
+        .muted { color: #888; font-size: 14px; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <% if (success) { %>
+        <h1>Check cashed</h1>
+        <p>Check #<%= check.id %> has been cashed for <strong>User #<%= receiverId %></strong>.</p>
+        <p class="success"><%= check.amount %> digipogs have been transferred.</p>
+        <% } else { %>
+        <h1>Redeem failed</h1>
+        <p>Check #<%= check.id %> was assigned to <strong>User #<%= receiverId %></strong>, but the transfer did not complete.</p>
+        <p class="failed">Please contact support or try again later.</p>
+        <% } %>
+        <p class="muted">No login required for this redemption.</p>
+    </div>
+</body>
+</html>

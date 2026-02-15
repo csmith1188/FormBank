@@ -1,0 +1,24 @@
+{
+  "name": "FormBank",
+  "version": "1.0.0",
+  "main": "app.js",
+  "scripts": {
+    "test": "nodemon app.js",
+    "start": "node app.js",
+    "init-db": "node db/init-db.js"
+  },
+  "author": "C. Smith",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "connect-sqlite3": "^0.9.16",
+    "dotenv": "^17.2.3",
+    "ejs": "^3.1.10",
+    "express": "^5.1.0",
+    "express-session": "^1.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "qrcode": "^1.5.4",
+    "socket.io-client": "^4.8.1",
+    "sqlite3": "^5.1.7"
+  }
+}
