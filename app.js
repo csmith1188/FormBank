@@ -143,12 +143,66 @@ function updateLoanPayment(loanId, additionalPayment, callback) {
     });
 }
 
-function increaseCreditLimit(userId, callback) {
-    db.run(
-        'UPDATE credit_limits SET current_limit = current_limit + 250, paid_off_count = paid_off_count + 1 WHERE borrower_formbar_user_id = ?',
-        [userId],
-        callback
-    );
+// Recalculate credit limit based on total repayments.
+// Credit limit starts at 250 and increases by +250 whenever
+// the user's total repayments reach their current credit limit.
+function updateCreditLimitFromRepayments(userId, callback) {
+    // Ensure a credit_limits row exists and get current values
+    getCreditLimit(userId, (err, limitRow) => {
+        if (err) return callback(err, null);
+
+        db.get(
+            'SELECT COALESCE(SUM(amount_paid), 0) AS total_repaid FROM credit_loans WHERE borrower_formbar_user_id = ?',
+            [userId],
+            (err, row) => {
+                if (err) return callback(err, null);
+
+                const totalRepaid = row && typeof row.total_repaid === 'number'
+                    ? row.total_repaid
+                    : 0;
+
+                let currentLimit = limitRow.current_limit;
+                let increaseCount = limitRow.paid_off_count || 0;
+                let increments = 0;
+
+                function thresholdForIndex(i) {
+                    // i = 0 → first increase at 250
+                    // i = 1 → second increase at 250 + 500 = 750
+                    // i = 2 → third increase at 250 + 500 + 750 = 1500, etc.
+                    const n = i + 1;
+                    return 250 * (n * (n + 1) / 2);
+                }
+
+                // Apply as many increases as total repayments allow
+                while (totalRepaid >= thresholdForIndex(increaseCount)) {
+                    currentLimit += 250;
+                    increaseCount += 1;
+                    increments += 1;
+                }
+
+                if (increments === 0) {
+                    return callback(null, {
+                        increased: false,
+                        increments: 0,
+                        newLimit: currentLimit
+                    });
+                }
+
+                db.run(
+                    'UPDATE credit_limits SET current_limit = ?, paid_off_count = ? WHERE borrower_formbar_user_id = ?',
+                    [currentLimit, increaseCount, userId],
+                    (err) => {
+                        if (err) return callback(err, null);
+                        callback(null, {
+                            increased: true,
+                            increments,
+                            newLimit: currentLimit
+                        });
+                    }
+                );
+            }
+        );
+    });
 }
 
 function updateCreditBalance(userId, amount, callback) {
@@ -468,18 +522,20 @@ app.post('/credit/repay', isAuthenticated, async (req, res) => {
                                 });
                             }
 
-                            // If loan is paid, increase credit limit
-                            if (paymentResult.isPaid) {
-                                increaseCreditLimit(userId, (err) => {
-                                    if (err) {
-                                        console.error('Failed to increase credit limit:', err);
-                                    }
-                                });
-                            }
+                            // Recalculate credit limit based on total repayments
+                            updateCreditLimitFromRepayments(userId, (limitErr, limitResult) => {
+                                if (limitErr) {
+                                    console.error('Failed to update credit limit from repayments:', limitErr);
+                                }
 
-                            res.json({ 
-                                success: true, 
-                                message: `Repayment of ${actualRepayment} digipogs processed${overpayment > 0 ? ` (${overpayment} digipogs credited to your account)` : ''}. ${paymentResult.isPaid ? 'Loan paid off! Your credit limit has increased.' : ''}` 
+                                const limitIncreased = limitResult && limitResult.increased;
+
+                                res.json({ 
+                                    success: true, 
+                                    message: `Repayment of ${actualRepayment} digipogs processed${overpayment > 0 ? ` (${overpayment} digipogs credited to your account)` : ''}.` +
+                                        (paymentResult.isPaid ? ' Loan paid off!' : '') +
+                                        (limitIncreased ? ' Your credit limit has increased.' : '')
+                                });
                             });
                         });
                     });
@@ -504,18 +560,20 @@ app.post('/credit/repay', isAuthenticated, async (req, res) => {
                             });
                         }
 
-                        // If loan is paid, increase credit limit
-                        if (paymentResult.isPaid) {
-                            increaseCreditLimit(userId, (err) => {
-                                if (err) {
-                                    console.error('Failed to increase credit limit:', err);
-                                }
-                            });
-                        }
+                        // Recalculate credit limit based on total repayments
+                        updateCreditLimitFromRepayments(userId, (limitErr, limitResult) => {
+                            if (limitErr) {
+                                console.error('Failed to update credit limit from repayments:', limitErr);
+                            }
 
-                        res.json({ 
-                            success: true, 
-                            message: `Repayment of ${actualRepayment} digipogs processed using credit balance${overpayment > 0 ? ` (${overpayment} digipogs credited)` : ''}. ${paymentResult.isPaid ? 'Loan paid off! Your credit limit has increased.' : ''}` 
+                            const limitIncreased = limitResult && limitResult.increased;
+
+                            res.json({ 
+                                success: true, 
+                                message: `Repayment of ${actualRepayment} digipogs processed using credit balance${overpayment > 0 ? ` (${overpayment} digipogs credited)` : ''}.` +
+                                    (paymentResult.isPaid ? ' Loan paid off!' : '') +
+                                    (limitIncreased ? ' Your credit limit has increased.' : '')
+                            });
                         });
                     });
                 }
@@ -601,16 +659,19 @@ app.post('/credit/repay/full', isAuthenticated, async (req, res) => {
                                 return res.status(500).json({ error: 'Failed to update loan payment' });
                             }
 
-                            // Loan should be paid now
-                            increaseCreditLimit(userId, (err) => {
-                                if (err) {
-                                    console.error('Failed to increase credit limit:', err);
+                            // Loan should be paid now; recalculate credit limit based on total repayments
+                            updateCreditLimitFromRepayments(userId, (limitErr, limitResult) => {
+                                if (limitErr) {
+                                    console.error('Failed to update credit limit from repayments:', limitErr);
                                 }
-                            });
 
-                            res.json({ 
-                                success: true, 
-                                message: `Full repayment of ${remainingOwed} digipogs processed${creditUsed > 0 ? ` (${creditUsed} from credit balance, ${transferNeeded} transferred)` : ''}. Loan paid off! Your credit limit has increased.` 
+                                const limitIncreased = limitResult && limitResult.increased;
+
+                                res.json({ 
+                                    success: true, 
+                                    message: `Full repayment of ${remainingOwed} digipogs processed${creditUsed > 0 ? ` (${creditUsed} from credit balance, ${transferNeeded} transferred)` : ''}. Loan paid off!` +
+                                        (limitIncreased ? ' Your credit limit has increased.' : '')
+                                });
                             });
                         });
                     });
@@ -625,16 +686,19 @@ app.post('/credit/repay/full', isAuthenticated, async (req, res) => {
                             return res.status(500).json({ error: 'Failed to update loan payment' });
                         }
 
-                        // Loan should be paid now
-                        increaseCreditLimit(userId, (err) => {
-                            if (err) {
-                                console.error('Failed to increase credit limit:', err);
+                        // Loan should be paid now; recalculate credit limit based on total repayments
+                        updateCreditLimitFromRepayments(userId, (limitErr, limitResult) => {
+                            if (limitErr) {
+                                console.error('Failed to update credit limit from repayments:', limitErr);
                             }
-                        });
 
-                        res.json({ 
-                            success: true, 
-                            message: `Full repayment of ${remainingOwed} digipogs processed using credit balance. Loan paid off! Your credit limit has increased.` 
+                            const limitIncreased = limitResult && limitResult.increased;
+
+                            res.json({ 
+                                success: true, 
+                                message: `Full repayment of ${remainingOwed} digipogs processed using credit balance. Loan paid off!` +
+                                    (limitIncreased ? ' Your credit limit has increased.' : '')
+                            });
                         });
                     });
                 }

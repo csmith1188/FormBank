@@ -6,7 +6,7 @@
 
 ### Credit & Loans
 - **Loan system**: Borrow digipogs with a fixed 20% interest per loan
-- **Credit limits**: Start at 250 digipogs; limit increases by +250 for each paid-off loan
+- **Credit limits**: Start at 250 digipogs; limit increases by +250 each time your total repayments reach your current credit limit
 - **Credit balance**: Overpayments are credited for future repayments
 - **One active loan** per user at a time
 - **Tax-aware**: Handles Formbar’s 10% transfer tax correctly
@@ -72,7 +72,7 @@ The app is available at `http://localhost:3000` (or your configured `PORT`).
 ### Credit & loans (summary)
 - Borrow **P** digipogs → receive **0.9×P** (after 10% tax), owe **P×1.2**
 - Repayments reduce the balance; overpayments go to credit balance
-- One active loan per user; paying off a loan increases the credit limit by 250
+- One active loan per user; every time your total repayments reach your current credit limit, that limit increases by 250
 
 ### Checks
 - **With receiver ID**: Fee (sender → lender) is run first; after 6 seconds, amount is transferred sender → receiver. Check is recorded as completed or failed.
