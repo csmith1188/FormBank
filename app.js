@@ -428,7 +428,12 @@ app.post('/credit/repay', isAuthenticated, async (req, res) => {
         return res.status(400).json({ error: 'Invalid repayment amount' });
     }
 
-    // Get active loan
+    const borrowerPin = req.body.pin;
+    if (borrowerPin === undefined || borrowerPin === null || String(borrowerPin).trim() === '') {
+        return res.status(400).json({ error: 'PIN is required for repayment.' });
+    }
+
+    // Loan and credit_balance are only updated after successful transfer or verified credit deduction.
     getActiveLoan(userId, (err, activeLoan) => {
         if (err) {
             return res.status(500).json({ error: 'Database error' });
@@ -460,9 +465,13 @@ app.post('/credit/repay', isAuthenticated, async (req, res) => {
                 transferNeeded = repaymentAmount - creditUsed;
                 
                 if (creditUsed > 0) {
-                    deductCreditBalance(userId, creditUsed, (err) => {
+                    deductCreditBalance(userId, creditUsed, (err, deducted) => {
                         if (err) {
                             return res.status(500).json({ error: 'Failed to apply credit balance' });
+                        }
+                        // If deduction failed (e.g. balance was insufficient), treat as no credit used so we require a transfer
+                        if (!deducted) {
+                            creditUsed = 0;
                         }
                         processRepayment();
                     });
@@ -479,16 +488,8 @@ app.post('/credit/repay', isAuthenticated, async (req, res) => {
                 const actualTransferNeeded = Math.max(0, actualRepayment - creditUsed);
 
                 if (actualTransferNeeded > 0) {
-                    // PIN is required for borrower-initiated transfers (per Formbar docs)
-                    const borrowerPin = req.body.pin;
-                    if (!borrowerPin) {
-                        // Rollback credit deduction if it happened
-                        if (creditUsed > 0) {
-                            updateCreditBalance(userId, creditUsed, () => {});
-                        }
-                        return res.status(400).json({ error: 'PIN is required for transfers. Please provide your digipog PIN.' });
-                    }
-
+                    // PIN already validated at top of handler. Transfer first; only update loan after success.
+                    const pinForTransfer = req.body.pin;
                     // Transfer from borrower to lender
                     formbarApi.transferDigipogs(
                         socket,
@@ -496,7 +497,7 @@ app.post('/credit/repay', isAuthenticated, async (req, res) => {
                         LENDER_USER_ID,
                         actualTransferNeeded,
                         `FormBank loan repayment: ${actualTransferNeeded} digipogs`,
-                        borrowerPin
+                        pinForTransfer
                     ).then(result => {
                         if (!result.success) {
                             // Rollback credit deduction if it happened
@@ -588,6 +589,11 @@ app.post('/credit/repay/full', isAuthenticated, async (req, res) => {
         return res.status(400).json({ error: 'User ID not found in session' });
     }
 
+    const borrowerPin = req.body.pin;
+    if (borrowerPin === undefined || borrowerPin === null || String(borrowerPin).trim() === '') {
+        return res.status(400).json({ error: 'PIN is required for repayment.' });
+    }
+
     // Get active loan
     getActiveLoan(userId, (err, activeLoan) => {
         if (err) {
@@ -614,9 +620,14 @@ app.post('/credit/repay/full', isAuthenticated, async (req, res) => {
 
             // Apply credit balance first
             if (creditUsed > 0) {
-                deductCreditBalance(userId, creditUsed, (err) => {
+                deductCreditBalance(userId, creditUsed, (err, deducted) => {
                     if (err) {
                         return res.status(500).json({ error: 'Failed to apply credit balance' });
+                    }
+                    // If deduction failed (e.g. balance was insufficient), require full transfer
+                    if (!deducted) {
+                        creditUsed = 0;
+                        transferNeeded = remainingOwed;
                     }
                     processFullRepayment();
                 });
@@ -626,16 +637,7 @@ app.post('/credit/repay/full', isAuthenticated, async (req, res) => {
 
             function processFullRepayment() {
                 if (transferNeeded > 0) {
-                    // PIN is required for borrower-initiated transfers (per Formbar docs)
-                    const borrowerPin = req.body.pin;
-                    if (!borrowerPin) {
-                        // Rollback credit deduction if it happened
-                        if (creditUsed > 0) {
-                            updateCreditBalance(userId, creditUsed, () => {});
-                        }
-                        return res.status(400).json({ error: 'PIN is required for transfers. Please provide your digipog PIN.' });
-                    }
-
+                    // PIN already validated at top of handler. Transfer first; only update loan after success.
                     // Transfer from borrower to lender
                     formbarApi.transferDigipogs(
                         socket,

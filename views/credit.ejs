@@ -262,8 +262,8 @@
                     <small style="color: #666;">Suggested: <%= activeLoan.amount_owed - activeLoan.amount_paid %> digipogs (full repayment)</small>
                 </div>
                 <div class="form-group">
-                    <label for="repayPin">PIN (if required for transfer)</label>
-                    <input type="text" id="repayPin" name="pin" placeholder="Optional">
+                    <label for="repayPin">PIN (required for repayment)</label>
+                    <input type="password" id="repayPin" name="pin" placeholder="Your digipog PIN" required autocomplete="off">
                 </div>
                 <button type="submit" class="btn btn-success">Make Payment</button>
                 <button type="button" class="btn btn-primary" onclick="repayFull()">Pay Full Amount</button>
@@ -374,10 +374,14 @@
             const form = event.target;
             const formData = new FormData(form);
             const amount = parseInt(formData.get('amount'));
-            const pin = formData.get('pin') || '';
+            const pin = (formData.get('pin') || '').toString().trim();
 
             if (amount <= 0) {
                 showMessage('repayMessage', 'Invalid repayment amount', 'error');
+                return false;
+            }
+            if (!pin) {
+                showMessage('repayMessage', 'PIN is required for repayment.', 'error');
                 return false;
             }
 
@@ -407,6 +411,11 @@
         }
 
         async function repayFull() {
+            const pin = (document.getElementById('repayPin')?.value || '').toString().trim();
+            if (!pin) {
+                showMessage('repayMessage', 'PIN is required for repayment.', 'error');
+                return;
+            }
             if (!confirm('Pay the full remaining balance?')) {
                 return;
             }
@@ -417,7 +426,7 @@
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ pin: document.getElementById('repayPin')?.value || '' })
+                    body: JSON.stringify({ pin: pin })
                 });
 
                 const data = await response.json();
