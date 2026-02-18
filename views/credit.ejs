@@ -218,7 +218,15 @@
     <div class="container">
         <div class="header">
             <h1>FormBank System</h1>
-            <p>Welcome, <strong><%= user %></strong> | <a href="/" class="nav-link">Home</a> <a href="/checks" class="nav-link">Checks</a> <a href="/logout" class="nav-link">Logout</a></p>
+            <p>
+                Welcome, <strong><%= user %></strong> |
+                <a href="/" class="nav-link">Home</a>
+                <a href="/checks" class="nav-link">Checks</a>
+                <% if (typeof isAdmin !== 'undefined' && isAdmin) { %>
+                <a href="/admin" class="nav-link">Admin</a>
+                <% } %>
+                <a href="/logout" class="nav-link">Logout</a>
+            </p>
         </div>
 
         <div class="stats">

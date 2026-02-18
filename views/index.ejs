@@ -181,6 +181,9 @@
             <div class="nav">
                 <a href="/credit" class="nav-link">Credit System →</a>
                 <a href="/checks" class="nav-link">Checks →</a>
+                <% if (typeof isAdmin !== 'undefined' && isAdmin) { %>
+                <a href="/admin" class="nav-link">Admin →</a>
+                <% } %>
                 <a href="/logout" class="nav-link">Logout</a>
             </div>
         </div>

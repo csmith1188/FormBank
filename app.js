@@ -273,7 +273,11 @@ function setCheckStatus(checkId, status, callback) {
 
 // Routes
 app.get('/', isAuthenticated, (req, res) => {
-    res.render('index', { user: req.session.user });
+    const userId = req.session.userId;
+    res.render('index', { 
+        user: req.session.user,
+        isAdmin: userId === LENDER_USER_ID
+    });
 });
 
 app.get('/login', (req, res) => {
@@ -301,6 +305,37 @@ app.get('/login', (req, res) => {
 app.get('/logout', (req, res) => {
     req.session.destroy();
     res.redirect('/login');
+});
+
+// Admin routes (default user only)
+app.get('/admin', isAuthenticated, (req, res) => {
+    const userId = req.session.userId;
+    if (!userId) {
+        return res.status(400).send('User ID not found in session');
+    }
+    if (userId !== LENDER_USER_ID) {
+        return res.status(403).send('Admin panel is only available to the default user.');
+    }
+
+    db.all(
+        'SELECT cl.borrower_formbar_user_id AS user_id, cl.current_limit, COALESCE(cb.credit_balance, 0) AS credit_balance ' +
+        'FROM credit_limits cl ' +
+        'LEFT JOIN credit_balances cb ON cb.borrower_formbar_user_id = cl.borrower_formbar_user_id ' +
+        'ORDER BY user_id ASC',
+        [],
+        (err, rows) => {
+            if (err) {
+                console.error('Error loading admin data:', err);
+                return res.status(500).send('Error loading admin data');
+            }
+            res.render('admin', {
+                user: req.session.user,
+                userId,
+                isAdmin: true,
+                users: rows || []
+            });
+        }
+    );
 });
 
 // Credit routes
@@ -340,7 +375,8 @@ app.get('/credit', isAuthenticated, (req, res) => {
                         creditLimit: limitData.current_limit,
                         creditBalance: balanceData.credit_balance,
                         activeLoan: activeLoan,
-                        loanHistory: loanHistory || []
+                        loanHistory: loanHistory || [],
+                        isAdmin: userId === LENDER_USER_ID
                     });
                 });
             });
