@@ -46,6 +46,7 @@ const PORT = process.env.PORT || 3000;
 const SESSION_SECRET = process.env.SESSION_SECRET || 'your_secret_key';
 const AUTH_URL = process.env.AUTH_URL || 'http://localhost:420/oauth';
 const THIS_URL = process.env.THIS_URL || `http://localhost:${PORT}`;
+const LOGIN_REDIRECT_URL = `${THIS_URL}/login`;
 const API_KEY = process.env.API_KEY || 'your_api_key';
 const LENDER_USER_ID = parseInt(process.env.LENDER_USER_ID) || 1;
 const LENDER_PIN = parseInt(process.env.LENDER_PIN) || 3639; // PIN must be a number per Formbar docs
@@ -298,7 +299,7 @@ app.get('/login', (req, res) => {
         res.redirect('/');
 
     } else {
-        res.redirect(`${AUTH_URL}/oauth?redirectURL=${THIS_URL}`);
+        res.redirect(`${AUTH_URL}/oauth?redirectURL=${LOGIN_REDIRECT_URL}`);
     };
 });
 
@@ -886,7 +887,7 @@ app.get('/checks/:id', (req, res, next) => {
 function renderCheckDetail(req, res, check, userId) {
     const checkId = check.id;
     const isSender = check.sender_formbar_user_id === userId;
-    const statusPageUrl = `${THIS_URL}/checks/${checkId}`;
+    const statusPageUrl = `${LOGIN_REDIRECT_URL}/checks/${checkId}`;
     const safeCheck = { ...check };
     delete safeCheck.pin_for_redemption;
     QRCode.toDataURL(statusPageUrl, { type: 'image/png', margin: 2 }, (err, qrDataUrl) => {
