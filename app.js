@@ -887,7 +887,7 @@ app.get('/checks/:id', (req, res, next) => {
 function renderCheckDetail(req, res, check, userId) {
     const checkId = check.id;
     const isSender = check.sender_formbar_user_id === userId;
-    const statusPageUrl = `${LOGIN_REDIRECT_URL}/checks/${checkId}`;
+    const statusPageUrl = `${THIS_URL}/checks/${checkId}`;
     const safeCheck = { ...check };
     delete safeCheck.pin_for_redemption;
     QRCode.toDataURL(statusPageUrl, { type: 'image/png', margin: 2 }, (err, qrDataUrl) => {
