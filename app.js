@@ -271,29 +271,49 @@ function deductCreditBalance(userId, amount, callback) {
 }
 
 // Check (write-check) database helpers
-/** Platform check fee: 5% of amount, minimum 5 digipogs. */
+/** Recipient keeps this fraction after Formbar's 10% transfer tax. */
+const FORMBAR_KEEP_RATE = 0.9;
+/** FormBank's target net take as a fraction of the check amount. */
+const FORMBANK_FEE_RATE = 0.05;
+
+/**
+ * Gross digipogs to send so the recipient nets at least `netDesired`
+ * after Formbar tax (assumes recipient receives floor(sent * 0.9)).
+ */
+function sendAmountForNet(netDesired) {
+    const net = Math.max(0, Math.floor(Number(netDesired) || 0));
+    if (net <= 0) return 0;
+    return Math.ceil(net / FORMBAR_KEEP_RATE);
+}
+
+/** FormBank's intended net fee (5% of check amount). */
 function calcCheckFee(amount) {
     const a = Math.max(0, Math.floor(Number(amount) || 0));
-    return Math.max(Math.ceil(a * 0.05), 5);
+    return Math.ceil(a * FORMBANK_FEE_RATE);
 }
 
-/** Amount to send so recipient nets ~amount after Formbar's 10% transfer tax. */
-function withFormbarTaxCover(amount) {
-    const a = Math.max(0, Math.floor(Number(amount) || 0));
-    return a + Math.ceil(a * 0.1);
-}
-
-/** Sender pays FormBank: check amount + 10% tax cover + platform fee (one transfer). */
-function checkChargeToFormBank(amount) {
-    return withFormbarTaxCover(amount) + calcCheckFee(amount);
+/** Gross FormBank → receiver so they net the full check amount. */
+function checkPayoutFromFormBank(amount) {
+    return sendAmountForNet(amount);
 }
 
 /**
- * Pay a funded check from FormBank to the receiver (amount + 10% tax cover).
+ * Gross sender → FormBank so that after tax FormBank can:
+ * 1) pay the receiver (full net amount), and
+ * 2) keep ~5% of the check amount.
+ */
+function checkChargeToFormBank(amount) {
+    const payout = checkPayoutFromFormBank(amount);
+    const fee = calcCheckFee(amount);
+    return sendAmountForNet(payout + fee);
+}
+
+/**
+ * Pay a funded check from FormBank to the receiver (grossed up for Formbar tax).
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 function payCheckFromFormBank(check, receiverId) {
-    const payout = withFormbarTaxCover(check.amount);
+    const payout = checkPayoutFromFormBank(check.amount);
     const memo = check.memo
         ? `Check #${check.id}: ${check.memo}`
         : `Check #${check.id} payout`;
@@ -1096,7 +1116,7 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
     }
 
     const fee = calcCheckFee(amount);
-    const taxCover = withFormbarTaxCover(amount);
+    const payout = checkPayoutFromFormBank(amount);
     const chargeTotal = checkChargeToFormBank(amount);
     const isFormBank = senderId === LENDER_USER_ID;
     const memoLabel = memo || `Check: ${amount} digipogs`;
@@ -1111,13 +1131,13 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
             senderId,
             LENDER_USER_ID,
             chargeTotal,
-            `Check deposit: ${amount} + tax cover + fee ${fee}`,
+            `Check deposit: net ${amount}, FormBank fee ${fee}`,
             pin
         ).then(afterFund);
     };
 
     if (receiverId === null) {
-        // Blank check: one charge to FormBank (amount + 10% + fee); payout happens on redeem.
+        // Blank check: charge enough for payout + FormBank fee; payout on redeem.
         fundThen((result) => {
             if (!result.success) {
                 createCheck(senderId, null, amount, fee, 'failed', memo, null, () => {});
@@ -1132,16 +1152,17 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
                     checkId: row.id,
                     charged: isFormBank ? 0 : chargeTotal,
                     fee,
+                    payout,
                     message: isFormBank
                         ? 'Blank check created (FormBank account).'
-                        : `Charged ${chargeTotal} digipogs to FormBank (amount ${amount} + 10% tax cover + fee ${fee}). Redeem pays the receiver from FormBank.`
+                        : `Charged ${chargeTotal} digipogs (covers Formbar tax on both legs + FormBank's 5% fee of ${fee}). Receiver will net ${amount}.`
                 });
             });
         });
         return;
     }
 
-    // Specific receiver: one charge to FormBank, then FormBank pays receiver amount + 10%.
+    // Specific receiver: charge FormBank enough, then pay receiver so they net 100% of amount.
     fundThen((result1) => {
         if (!result1.success) {
             createCheck(senderId, receiverId, amount, fee, 'failed', memo, null, () => {});
@@ -1151,7 +1172,7 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
             socket,
             LENDER_USER_ID,
             receiverId,
-            taxCover,
+            payout,
             memoLabel,
             LENDER_PIN
         ).then((result2) => {
@@ -1170,9 +1191,10 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
                     checkId: row.id,
                     charged: isFormBank ? 0 : chargeTotal,
                     fee,
+                    payout,
                     message: isFormBank
-                        ? `Paid ${taxCover} digipogs from FormBank to receiver.`
-                        : `Charged ${chargeTotal} to FormBank; paid ${taxCover} to receiver (nets ~${amount} after Formbar tax). Fee ${fee} stays with FormBank.`
+                        ? `Paid ${payout} digipogs from FormBank so receiver nets ${amount}.`
+                        : `Charged ${chargeTotal}; FormBank paid ${payout} (receiver nets ${amount}); FormBank keeps ~${fee} (5%).`
                 });
             });
         });

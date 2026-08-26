@@ -13,9 +13,9 @@
 
 ### Checks
 - **Write checks** to a specific user (Formbar user ID) or leave receiver blank
-- **One deposit**: sender pays FormBank once for amount + 10% (Formbar tax cover) + fee (5% or 5 digipogs min)
-- **Payout**: FormBank then sends amount + 10% to the receiver so they net ~the check amount after tax
-- **Blank check**: same deposit at write time; FormBank pays the redeemer when someone opens the check status page
+- **One deposit**: sender pays FormBank enough to cover Formbar’s 10% tax on *both* legs plus FormBank’s **net 5%** fee
+- **Payout**: FormBank sends a grossed-up amount so the receiver nets **100%** of the check amount
+- **Blank check**: same deposit at write time; FormBank pays the redeemer on the status page
 - **Check status page**: Sender and receiver can view check details and a QR code for the status URL
 - **FormBank account**: If the writer is the lender (`LENDER_USER_ID`), the deposit charge is skipped (funds already at FormBank)
 
@@ -77,8 +77,8 @@ The app is available at `http://localhost:3000` (or your configured `PORT`).
 - One active loan per user; every time your total repayments reach your current credit limit, that limit increases by `CREDIT_LIMIT_STEP` (default 500)
 
 ### Checks
-- **With receiver ID**: One transfer sender → FormBank (amount + 10% + fee), then FormBank → receiver (amount + 10%) using `LENDER_PIN`.
-- **No receiver (blank)**: Same deposit to FormBank at write time. On redeem, FormBank → receiver (amount + 10%).
+- **With receiver ID**: One transfer sender → FormBank (grossed for two tax legs + 5% FormBank fee), then FormBank → receiver (grossed so they net 100% of the amount) using `LENDER_PIN`.
+- **No receiver (blank)**: Same deposit to FormBank at write time. On redeem, FormBank → receiver (full net amount).
 - **FormBank writer**: When the writer’s user ID equals `LENDER_USER_ID`, the deposit step is skipped and only the payout runs (for a specific receiver).
 
 ## Main routes

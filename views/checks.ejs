@@ -116,9 +116,9 @@
         <div class="section">
             <h2>Write a check</h2>
             <div class="alert-info">
-                Fee: 5% of the amount or 5 digipogs (whichever is greater). You are charged <strong>once</strong>:
-                check amount + 10% (Formbar tax cover) + fee, all sent to FormBank. FormBank then pays the receiver
-                amount + 10% so they net about the check amount after tax. Leave receiver blank to fund a check anyone can redeem.
+                You are charged <strong>once</strong> for enough digipogs to cover Formbar’s 10% tax on
+                <em>both</em> transfers (you → FormBank, then FormBank → receiver) plus FormBank’s <strong>5%</strong> fee.
+                The receiver nets <strong>100%</strong> of the check amount. Leave receiver blank to fund a check anyone can redeem.
             </div>
             <form id="writeCheckForm" onsubmit="return submitWriteCheck(event)">
                 <div class="form-group">
@@ -239,9 +239,9 @@
             document.getElementById('writeCheckMessage').classList.remove('show');
 
             if (receiverId === '') {
-                showStatus('Charging FormBank (amount + 10% + fee) and creating blank check...');
+                showStatus('Funding FormBank (tax on both legs + 5% fee)...');
             } else {
-                showStatus('Charging FormBank once, then paying the receiver...');
+                showStatus('Funding FormBank, then paying receiver the full amount...');
             }
 
             try {
