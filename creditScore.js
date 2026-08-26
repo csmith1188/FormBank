@@ -24,10 +24,11 @@ const BASE_SCORE = SCORE_MIN;
 const LIMIT_AT_MIN_SCORE = 250;
 const LIMIT_AT_MAX_SCORE = 100_000;
 /**
- * Credit-limit curve exponent (>1 = slow early growth, steep only at high scores).
- * Higher ⇒ large lines of credit require nearer-to-perfect scores.
+ * Credit-limit curve exponent (>1 = flat early, steep near the top).
+ * Low-score gains barely raise the limit; a little progress at high scores
+ * unlocks a lot of borrowing power.
  */
-const LIMIT_CURVE_EXPONENT = 2.75;
+const LIMIT_CURVE_EXPONENT = 4;
 /**
  * Score mobility multipliers by band position (t=0 at 300, t=1 at 850).
  * Low scores: large gains/losses. High scores: sticky / hard to move.
@@ -367,8 +368,9 @@ function scoreLabel(score) {
 
 /**
  * Map score → borrowing limit (digipogs).
- * Score 300 → 250, score 850 → 100,000 with a steep power curve so large
- * lines of credit require high scores built over time.
+ * Score 300 → 250, score 850 → 100,000. Power curve (exponent > 1):
+ * climbing through Poor/Fair barely moves the limit; the same score gain
+ * near Very Good / Exceptional unlocks a large share of the remaining line.
  */
 function creditLimitFromScore(score) {
     const s = clamp(score, SCORE_MIN, SCORE_MAX);
