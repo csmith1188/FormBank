@@ -4,36 +4,19 @@
  * Core loop: take loans → repay them fully and quickly → score rises →
  * higher limit, lower APR, smaller check fees.
  *
- * Mobility: the same good/bad behavior moves the score a lot near 300 and
- * very little near 850, so high scores (and large credit lines) take time.
- *
  * Score factors (weights inspired by real FICO categories):
- * - Payment history / paid-in-full
- * - Credit utilization vs available limit
- * - Unpaid balance burden on open loans
- * - Portion repaid (progress on open + lifetime)
- * - Speed of payoff / time open
- * - Due dates / on-time streaks & missed payments
+ * - Payment history / paid-in-full (~35%)
+ * - Credit utilization vs available limit (~25%)
+ * - Unpaid balance burden on open loans (~15%)
+ * - Portion repaid (progress on open + lifetime) (~15%)
+ * - Speed of payoff / time open (~10%)
+ * - Due dates / on-time streaks & missed payments (payment history severity)
  */
 
 const SCORE_MIN = 300;
 const SCORE_MAX = 850;
 /** Thin-file / new borrower starting score (minimum / Poor). */
 const BASE_SCORE = SCORE_MIN;
-/** Borrowing limit at SCORE_MIN / SCORE_MAX. */
-const LIMIT_AT_MIN_SCORE = 250;
-const LIMIT_AT_MAX_SCORE = 100_000;
-/**
- * Credit-limit curve exponent (>1 = slow early growth, steep only at high scores).
- * Higher ⇒ large lines of credit require nearer-to-perfect scores.
- */
-const LIMIT_CURVE_EXPONENT = 2.75;
-/**
- * Score mobility multipliers by band position (t=0 at 300, t=1 at 850).
- * Low scores: large gains/losses. High scores: sticky / hard to move.
- */
-const MOBILITY_AT_MIN = 2.25;
-const MOBILITY_AT_MAX = 0.18;
 /** One-time origination fee on principal when a loan is issued. */
 const ORIGINATION_FEE_RATE = 0.10;
 /** Minimum payment = this fraction of remaining balance (floored by MIN_PAYMENT_FLOOR). */
@@ -118,45 +101,6 @@ function quickPayoffBonus(loan) {
     return 0;
 }
 
-/** 0 at SCORE_MIN, 1 at SCORE_MAX. */
-function scoreProgress(score) {
-    return clamp((Number(score) - SCORE_MIN) / (SCORE_MAX - SCORE_MIN), 0, 1);
-}
-
-/**
- * How strongly a raw point of gain/loss applies at the current score.
- * Low score ≈ MOBILITY_AT_MIN, high score ≈ MOBILITY_AT_MAX.
- */
-function mobilityAt(score) {
-    const t = scoreProgress(score);
-    return lerp(t, 0, 1, MOBILITY_AT_MIN, MOBILITY_AT_MAX);
-}
-
-/**
- * Apply a raw (unscaled) delta onto base with position-dependent mobility.
- * Walks point-by-point so climbing into high scores naturally slows down.
- */
-function applyMobileDelta(baseScore, rawDelta) {
-    let score = clamp(Number(baseScore) || BASE_SCORE, SCORE_MIN, SCORE_MAX);
-    const delta = Number(rawDelta) || 0;
-    if (delta === 0) return score;
-
-    const direction = delta > 0 ? 1 : -1;
-    // Sub-step for smoother integration when |delta| is large
-    const steps = Math.min(400, Math.max(1, Math.round(Math.abs(delta))));
-    const rawPerStep = Math.abs(delta) / steps;
-
-    for (let i = 0; i < steps; i++) {
-        const scale = mobilityAt(score);
-        score += direction * rawPerStep * scale;
-        score = clamp(score, SCORE_MIN, SCORE_MAX);
-        // Early exit if pinned at a bound
-        if (direction > 0 && score >= SCORE_MAX) break;
-        if (direction < 0 && score <= SCORE_MIN) break;
-    }
-    return clamp(Math.round(score), SCORE_MIN, SCORE_MAX);
-}
-
 /**
  * Compute a 300–850 credit score from loan records.
  *
@@ -170,19 +114,19 @@ function computeCreditScore(loans, context = {}) {
     const activeLoan = list.find((l) => l.status === 'active') || null;
     const hasHistory = list.length > 0;
 
-    // Provisional raw score (pre-mobility) only to estimate limit for utilization
-    let provisionalRaw = 0;
-    provisionalRaw += Math.min(175, paidLoans.length * 35);
+    // --- Provisional score (no limit utilization) to derive a limit if none provided ---
+    let provisional = BASE_SCORE;
+    provisional += Math.min(175, paidLoans.length * 35);
     for (const loan of paidLoans) {
-        provisionalRaw += quickPayoffBonus(loan);
+        provisional += quickPayoffBonus(loan);
     }
-    const provisionalScore = applyMobileDelta(BASE_SCORE, provisionalRaw);
+    provisional = clamp(provisional, SCORE_MIN, SCORE_MAX);
     const availableLimit = Math.max(
-        LIMIT_AT_MIN_SCORE,
-        Number(context.creditLimit) || creditLimitFromScore(provisionalScore)
+        250,
+        Number(context.creditLimit) || creditLimitFromScore(provisional)
     );
 
-    let rawDelta = 0;
+    let score = BASE_SCORE;
     const breakdown = {
         base: BASE_SCORE,
         paymentHistory: 0,
@@ -194,9 +138,10 @@ function computeCreditScore(loans, context = {}) {
         paymentSchedule: 0
     };
 
-    // ----- 1. Payment history: fully paid loans + quick payoff -----
-    // Later paid loans still count, but mobility will shrink their effect at high scores.
-    let historyPts = Math.min(200, paidLoans.length * 28);
+    // ----- 1. Payment history (~35%): fully paid loans + quick payoff -----
+    // Each paid-in-full loan: +35 (cap 5 → +175)
+    let historyPts = Math.min(175, paidLoans.length * 35);
+    // Quick payoff bonuses (cap +70 total)
     let speedFromPaid = 0;
     for (const loan of paidLoans) {
         speedFromPaid += quickPayoffBonus(loan);
@@ -204,58 +149,65 @@ function computeCreditScore(loans, context = {}) {
     speedFromPaid = Math.min(70, speedFromPaid);
     breakdown.paymentHistory = historyPts;
     breakdown.speed += speedFromPaid;
-    rawDelta += historyPts + speedFromPaid;
+    score += historyPts + speedFromPaid;
 
-    // ----- 2. Utilization vs available credit limit -----
+    // ----- 2. Utilization vs available credit limit (~25%) -----
+    // Lose score for using a large share of your limit at once.
     if (!hasHistory) {
         breakdown.utilization = 0;
     } else if (!activeLoan) {
-        breakdown.utilization = 70; // clean slate (smaller raw; mobility amplifies at low scores)
-        rawDelta += 70;
+        breakdown.utilization = 90; // clean slate / paid off
+        score += 90;
     } else {
         const principal = Number(activeLoan.principal) || 0;
         const remaining = loanRemaining(activeLoan);
+        // Use the larger of principal-drawn or current remaining vs limit
         const drawn = Math.max(principal, remaining);
         const utilization = availableLimit > 0 ? Math.min(1.5, drawn / availableLimit) : 1;
-        // 0% util → +70, 50% → 0, 100% → -90, >100% → -120
-        const utilPts = Math.round(70 - 160 * utilization);
-        breakdown.utilization = clamp(utilPts, -120, 70);
-        rawDelta += breakdown.utilization;
+        // 0% util → +90, 50% → 0, 100% → -90, >100% → -120
+        const utilPts = Math.round(90 - 180 * utilization);
+        breakdown.utilization = clamp(utilPts, -120, 90);
+        score += breakdown.utilization;
     }
 
-    // ----- 3. Unpaid balance burden -----
+    // ----- 3. Unpaid balance burden (~15%) -----
+    // Lose score for how much of an open loan is still unpaid.
     if (activeLoan) {
         const owed = Number(activeLoan.amount_owed) || 0;
         const remaining = loanRemaining(activeLoan);
         const unpaidRatio = owed > 0 ? remaining / owed : 1;
+        // Full unpaid → -80, half paid → -40, nearly paid → ~0
         const ratioPenalty = Math.round(-80 * unpaidRatio);
+        // Extra drag for large absolute balances (soft)
         const sizePenalty = -Math.min(40, Math.floor(remaining / 500));
         breakdown.unpaidBurden = ratioPenalty + sizePenalty;
-        rawDelta += breakdown.unpaidBurden;
+        score += breakdown.unpaidBurden;
     }
 
-    // ----- 4. Repayment progress gains -----
+    // ----- 4. Repayment progress gains (~15%) -----
+    // Gain score for portion paid back (active loan + lifetime).
     if (activeLoan) {
         const owed = Number(activeLoan.amount_owed) || 0;
         const paid = Number(activeLoan.amount_paid) || 0;
         if (owed > 0 && paid > 0) {
             const portion = Math.min(1, paid / owed);
-            const progressPts = Math.round(45 * portion);
+            const progressPts = Math.round(50 * portion);
             breakdown.repaymentProgress += progressPts;
-            rawDelta += progressPts;
+            score += progressPts;
         }
     }
+    // Lifetime: total paid vs total ever owed across all loans
     const totalPaid = list.reduce((s, l) => s + (Number(l.amount_paid) || 0), 0);
     const totalOwedEver = list.reduce((s, l) => s + (Number(l.amount_owed) || 0), 0);
     if (totalOwedEver > 0) {
         const lifePortion = Math.min(1, totalPaid / totalOwedEver);
-        const lifePts = Math.round(35 * lifePortion);
+        const lifePts = Math.round(40 * lifePortion);
         breakdown.repaymentProgress += lifePts;
-        rawDelta += lifePts;
+        score += lifePts;
     }
 
-    // ----- 5. Speed / aging on open loans -----
-    // History age is the main "takes time" lever into high bands.
+    // ----- 5. Speed / aging on open loans (~10%) -----
+    // Reward history length lightly; penalize loans left open a long time.
     if (hasHistory) {
         let earliest = Date.now();
         for (const loan of list) {
@@ -263,26 +215,27 @@ function computeCreditScore(loans, context = {}) {
             if (!isNaN(t) && t < earliest) earliest = t;
         }
         const weeks = Math.max(0, (Date.now() - earliest) / (7 * MS_PER_DAY));
-        // Slower drip: ~1 pt / week, needs many weeks to matter after mobility compresses
-        const agePts = Math.min(60, Math.floor(weeks * 1.0));
+        const agePts = Math.min(40, Math.floor(weeks * 1.25));
         breakdown.speed += agePts;
-        rawDelta += agePts;
+        score += agePts;
     }
     if (activeLoan && activeLoan.created_at) {
         const daysOpen = daysBetween(activeLoan.created_at, Date.now());
+        // Grace ~7 days, then -2/day equivalent via weeks: -3 per week after week 1, cap -50
         const weeksLate = Math.max(0, (daysOpen - 7) / 7);
         const openPenalty = -Math.min(50, Math.floor(weeksLate * 3));
         breakdown.speed += openPenalty;
-        rawDelta += openPenalty;
+        score += openPenalty;
     }
 
     // ----- 6. New credit: open loan mild penalty until paid off -----
     if (activeLoan) {
         breakdown.newCredit = -15;
-        rawDelta += -15;
+        score += -15;
     }
 
     // ----- 7. Due dates / on-time streaks & missed payments -----
+    // Missed minimums hurt more than merely carrying an unpaid balance.
     let totalMissed = 0;
     let bestStreak = 0;
     for (const loan of list) {
@@ -299,9 +252,10 @@ function computeCreditScore(loans, context = {}) {
         overduePts = -CURRENTLY_OVERDUE_PENALTY;
     }
     breakdown.paymentSchedule = streakPts + missedPts + overduePts;
-    rawDelta += breakdown.paymentSchedule;
+    score += breakdown.paymentSchedule;
 
-    return applyMobileDelta(BASE_SCORE, rawDelta);
+    const finalScore = clamp(Math.round(score), SCORE_MIN, SCORE_MAX);
+    return finalScore;
 }
 
 /**
@@ -367,56 +321,12 @@ function scoreLabel(score) {
 
 /**
  * Map score → borrowing limit (digipogs).
- * Score 300 → 250, score 850 → 100,000 with a steep power curve so large
- * lines of credit require high scores built over time.
+ * Score 300 → 250, score 850 → 1,000,000 (linear), rounded to nearest 25.
  */
 function creditLimitFromScore(score) {
     const s = clamp(score, SCORE_MIN, SCORE_MAX);
-    const t = scoreProgress(s);
-    const shaped = Math.pow(t, LIMIT_CURVE_EXPONENT);
-    const limit = LIMIT_AT_MIN_SCORE + (LIMIT_AT_MAX_SCORE - LIMIT_AT_MIN_SCORE) * shaped;
-    return Math.max(LIMIT_AT_MIN_SCORE, Math.round(limit / 25) * 25);
-}
-
-/**
- * Recalculate current_limit for every row in credit_limits from stored credit_score.
- * @param {import('sqlite3').Database} db
- * @param {(err: Error|null, result?: { updated: number, total: number }) => void} callback
- */
-function recalculateAllCreditLimits(db, callback) {
-    const done = typeof callback === 'function' ? callback : () => {};
-    db.all(
-        'SELECT borrower_formbar_user_id AS user_id, credit_score, current_limit FROM credit_limits ORDER BY borrower_formbar_user_id ASC',
-        [],
-        (err, rows) => {
-            if (err) return done(err);
-            const list = rows || [];
-            if (list.length === 0) return done(null, { updated: 0, total: 0 });
-
-            let pending = list.length;
-            let updated = 0;
-            list.forEach((row) => {
-                const score = row.credit_score != null ? Number(row.credit_score) : BASE_SCORE;
-                const newLimit = creditLimitFromScore(score);
-                db.run(
-                    'UPDATE credit_limits SET current_limit = ? WHERE borrower_formbar_user_id = ?',
-                    [newLimit, row.user_id],
-                    function (updErr) {
-                        if (!updErr && this.changes > 0) updated += 1;
-                        if (updErr) {
-                            console.error(`[recalc-limits] User ${row.user_id}:`, updErr.message);
-                        } else {
-                            console.log(
-                                `[recalc-limits] User ${row.user_id}: score ${score}, limit ${row.current_limit} → ${newLimit}`
-                            );
-                        }
-                        pending -= 1;
-                        if (pending === 0) done(null, { updated, total: list.length });
-                    }
-                );
-            });
-        }
-    );
+    const limit = lerp(s, SCORE_MIN, SCORE_MAX, 250, 1_000_000);
+    return Math.max(250, Math.round(limit / 25) * 25);
 }
 
 /**
@@ -483,11 +393,6 @@ module.exports = {
     SCORE_MIN,
     SCORE_MAX,
     BASE_SCORE,
-    LIMIT_AT_MIN_SCORE,
-    LIMIT_AT_MAX_SCORE,
-    LIMIT_CURVE_EXPONENT,
-    MOBILITY_AT_MIN,
-    MOBILITY_AT_MAX,
     ORIGINATION_FEE_RATE,
     MIN_PAYMENT_RATE,
     MIN_PAYMENT_FLOOR,
@@ -495,11 +400,7 @@ module.exports = {
     computeCreditScore,
     explainCreditScore,
     scoreLabel,
-    scoreProgress,
-    mobilityAt,
-    applyMobileDelta,
     creditLimitFromScore,
-    recalculateAllCreditLimits,
     interestRateFromScore,
     periodRateFromAnnual,
     amountOwedAfterOriginationFee,
