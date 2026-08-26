@@ -1,6 +1,7 @@
 CREATE TABLE users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username VARCHAR(50) UNIQUE NOT NULL
+    username VARCHAR(50) UNIQUE NOT NULL,
+    formbar_id INTEGER UNIQUE
 );
 
 CREATE TABLE credit_loans (
@@ -17,7 +18,7 @@ CREATE TABLE credit_loans (
 
 CREATE TABLE credit_limits (
     borrower_formbar_user_id INTEGER PRIMARY KEY,
-    current_limit INTEGER DEFAULT 250,
+    current_limit INTEGER DEFAULT 500,
     paid_off_count INTEGER DEFAULT 0
 );
 

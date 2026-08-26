@@ -104,7 +104,7 @@
         <div class="header">
             <div>
                 <h1>Admin Panel</h1>
-                <p>Logged in as default user: <strong><%= user %></strong> <span class="badge">Formbar ID: <%= userId %></span></p>
+                <p>Logged in as default user: <strong><%= user %></strong> <span class="badge"><%- formbarUserLink(userId, typeof userNames !== 'undefined' ? userNames : {}) %></span></p>
             </div>
             <div class="nav-links">
                 <a href="/">Home</a>
@@ -120,7 +120,7 @@
             <table>
                 <thead>
                     <tr>
-                        <th>Formbar User ID</th>
+                        <th>User</th>
                         <th>Credit Limit</th>
                         <th>Credit Balance</th>
                     </tr>
@@ -130,7 +130,7 @@
                     <% users.forEach(u => { %>
                     <% totalBalance += (u.credit_balance || 0); %>
                     <tr>
-                        <td><%= u.user_id %></td>
+                        <td><%- formbarUserLink(u.user_id, userNames) %></td>
                         <td><%= u.current_limit %> dp</td>
                         <td><%= u.credit_balance || 0 %> dp</td>
                     </tr>

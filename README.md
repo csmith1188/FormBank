@@ -6,7 +6,7 @@
 
 ### Credit & Loans
 - **Loan system**: Borrow digipogs with a fixed 20% interest per loan
-- **Credit limits**: Start at 250 digipogs; limit increases by +250 each time your total repayments reach your current credit limit
+- **Credit limits**: Start at 500 digipogs; limit increases by +500 each time your total repayments reach your current credit limit (configured via `CREDIT_LIMIT_STEP`)
 - **Credit balance**: Overpayments are credited for future repayments
 - **One active loan** per user at a time
 - **Tax-aware**: Handles Formbar’s 10% transfer tax correctly
@@ -48,6 +48,7 @@
    API_KEY=your_api_key_here
    LENDER_USER_ID=1
    LENDER_PIN=3639
+   CREDIT_LIMIT_STEP=500
    ```
 
 ### Environment variables
@@ -60,6 +61,7 @@
 | `API_KEY` | API key for the Formbar Socket.io connection |
 | `LENDER_USER_ID` | Formbar user ID of the lender/default account |
 | `LENDER_PIN` | PIN for transfers from the lender account (and for redemption on behalf of sender when applicable) |
+| `CREDIT_LIMIT_STEP` | Starting credit limit and amount added each repayment threshold (default: 500) |
 
 ### Run the app
 ```bash
@@ -72,7 +74,7 @@ The app is available at `http://localhost:3000` (or your configured `PORT`).
 ### Credit & loans (summary)
 - Borrow **P** digipogs → receive **0.9×P** (after 10% tax), owe **P×1.2**
 - Repayments reduce the balance; overpayments go to credit balance
-- One active loan per user; every time your total repayments reach your current credit limit, that limit increases by 250
+- One active loan per user; every time your total repayments reach your current credit limit, that limit increases by `CREDIT_LIMIT_STEP` (default 500)
 
 ### Checks
 - **With receiver ID**: Fee (sender → lender) is run first; after 6 seconds, amount is transferred sender → receiver. Check is recorded as completed or failed.

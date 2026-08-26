@@ -152,7 +152,7 @@
                     <tr>
                         <th>Date</th>
                         <th>Role</th>
-                        <th>Other party (ID)</th>
+                        <th>Other party</th>
                         <th>Amount</th>
                         <th>Fee</th>
                         <th>Status</th>
@@ -164,13 +164,12 @@
                     <%
                         var isSent = check.sender_formbar_user_id === userId;
                         var otherId = isSent ? check.receiver_formbar_user_id : check.sender_formbar_user_id;
-                        var otherLabel = (otherId == null || otherId === '') ? 'Anyone (uncashed)' : otherId;
                         var role = isSent ? 'Sent' : 'Received';
                     %>
                     <tr>
                         <td><%= new Date(check.created_at).toLocaleString() %></td>
                         <td><%= role %></td>
-                        <td><%= otherLabel %></td>
+                        <td><%- formbarUserLink(otherId, userNames) %></td>
                         <td><%= check.amount %> digipogs</td>
                         <td><%= check.fee_charged %> digipogs</td>
                         <td>

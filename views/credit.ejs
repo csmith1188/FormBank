@@ -212,6 +212,14 @@
             color: #1B5E20;
             text-decoration: underline;
         }
+        tr.highscore-you {
+            background: #f0f7f0;
+        }
+        .rank-medal {
+            font-weight: 600;
+            color: #555;
+            white-space: nowrap;
+        }
     </style>
 </head>
 <body>
@@ -295,6 +303,37 @@
             <div id="borrowMessage" class="message"></div>
         </div>
         <% } %>
+
+        <div class="section">
+            <h2>Credit Limit Highscores</h2>
+            <p style="color:#666; margin-bottom: 8px;">Top 50 highest credit limits across FormBank.</p>
+            <% if (highscores && highscores.length > 0) { %>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Rank</th>
+                        <th>User</th>
+                        <th>Credit Limit</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <% highscores.forEach(function(row, index) { %>
+                    <% var isYou = typeof userId !== 'undefined' && row.user_id === userId; %>
+                    <tr class="<%= isYou ? 'highscore-you' : '' %>">
+                        <td class="rank-medal">#<%= index + 1 %></td>
+                        <td>
+                            <%- formbarUserLink(row.user_id, typeof userNames !== 'undefined' ? userNames : {}) %>
+                            <% if (isYou) { %> <span style="color:#2E7D32; font-weight:600;">(you)</span><% } %>
+                        </td>
+                        <td><strong><%= row.current_limit %></strong> digipogs</td>
+                    </tr>
+                    <% }); %>
+                </tbody>
+            </table>
+            <% } else { %>
+            <p style="color: #666;">No credit limits yet. Borrow and repay to appear on the board.</p>
+            <% } %>
+        </div>
 
         <div class="section">
             <h2>Loan History</h2>

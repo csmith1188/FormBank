@@ -38,6 +38,24 @@ const db = new sqlite3.Database('./db/database.db', (err) => {
                 });
             }
         );
+        // Ensure users table has formbar_id for ID → username cache
+        db.run(
+            'CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username VARCHAR(50) UNIQUE NOT NULL, formbar_id INTEGER UNIQUE)',
+            (err) => {
+                if (err) return console.error('Error ensuring users table:', err);
+                db.all('PRAGMA table_info(users)', (err, cols) => {
+                    if (err || !cols) return;
+                    if (!cols.some(c => c.name === 'formbar_id')) {
+                        db.run('ALTER TABLE users ADD COLUMN formbar_id INTEGER', (alterErr) => {
+                            if (alterErr) return console.error('Error adding formbar_id to users:', alterErr);
+                            db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_formbar_id ON users(formbar_id)', () => {});
+                        });
+                    } else {
+                        db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_formbar_id ON users(formbar_id)', () => {});
+                    }
+                });
+            }
+        );
     }
 });
 
@@ -50,12 +68,40 @@ const LOGIN_REDIRECT_URL = `${THIS_URL}/login`;
 const API_KEY = process.env.API_KEY || 'your_api_key';
 const LENDER_USER_ID = parseInt(process.env.LENDER_USER_ID) || 1;
 const LENDER_PIN = parseInt(process.env.LENDER_PIN) || 3639; // PIN must be a number per Formbar docs
+/** Starting credit limit and amount added each time the repayment threshold is met. */
+const CREDIT_LIMIT_STEP = Math.max(1, parseInt(process.env.CREDIT_LIMIT_STEP, 10) || 500);
+/** Public Formbar origin for profile links (defaults to production Formbar). */
+const FORMBAR_URL = (process.env.FORMBAR_URL || 'https://formbar.yorktechapps.com')
+    .replace(/\/oauth\/?$/, '')
+    .replace(/\/$/, '') || 'https://formbar.yorktechapps.com';
+/** API base for user lookups (same Formbar instance as OAuth when FORMBAR_URL unset). */
+const FORMBAR_API_URL = (process.env.FORMBAR_URL || process.env.AUTH_URL || FORMBAR_URL)
+    .replace(/\/oauth\/?$/, '')
+    .replace(/\/$/, '') || FORMBAR_URL;
 
 // Middleware
 app.set('view engine', 'ejs');
 app.use(express.static('public'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/** Render a Formbar profile link for a user ID (username from map, or User #id fallback). */
+app.locals.formbarUserLink = function(formbarUserId, userNames) {
+    if (formbarUserId == null || formbarUserId === '') return 'Anyone (uncashed)';
+    const id = Number(formbarUserId);
+    const name = (userNames && (userNames[id] || userNames[String(id)])) || `User #${id}`;
+    const url = `${FORMBAR_URL}/profile/${id}`;
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer">${escapeHtml(name)}</a>`;
+};
 
 app.use(session({
     store: new SQLiteStore({ db: 'sessions.db', dir: './db' }),
@@ -75,9 +121,9 @@ function getCreditLimit(userId, callback) {
         if (err) return callback(err, null);
         if (!row) {
             // Initialize with default limit
-            db.run('INSERT INTO credit_limits (borrower_formbar_user_id, current_limit, paid_off_count) VALUES (?, 250, 0)', [userId], function(err) {
+            db.run('INSERT INTO credit_limits (borrower_formbar_user_id, current_limit, paid_off_count) VALUES (?, ?, 0)', [userId, CREDIT_LIMIT_STEP], function(err) {
                 if (err) return callback(err, null);
-                callback(null, { current_limit: 250, paid_off_count: 0 });
+                callback(null, { current_limit: CREDIT_LIMIT_STEP, paid_off_count: 0 });
             });
         } else {
             callback(null, row);
@@ -145,7 +191,7 @@ function updateLoanPayment(loanId, additionalPayment, callback) {
 }
 
 // Recalculate credit limit based on total repayments.
-// Credit limit starts at 250 and increases by +250 whenever
+// Credit limit starts at CREDIT_LIMIT_STEP and increases by +CREDIT_LIMIT_STEP whenever
 // the user's total repayments reach their current credit limit.
 function updateCreditLimitFromRepayments(userId, callback) {
     // Ensure a credit_limits row exists and get current values
@@ -167,16 +213,15 @@ function updateCreditLimitFromRepayments(userId, callback) {
                 let increments = 0;
 
                 function thresholdForIndex(i) {
-                    // i = 0 → first increase at 250
-                    // i = 1 → second increase at 250 + 500 = 750
-                    // i = 2 → third increase at 250 + 500 + 750 = 1500, etc.
+                    // i = 0 → first increase at STEP
+                    // i = 1 → second increase at STEP + 2*STEP, etc. (triangular)
                     const n = i + 1;
-                    return 250 * (n * (n + 1) / 2);
+                    return CREDIT_LIMIT_STEP * (n * (n + 1) / 2);
                 }
 
                 // Apply as many increases as total repayments allow
                 while (totalRepaid >= thresholdForIndex(increaseCount)) {
-                    currentLimit += 250;
+                    currentLimit += CREDIT_LIMIT_STEP;
                     increaseCount += 1;
                     increments += 1;
                 }
@@ -272,6 +317,84 @@ function setCheckStatus(checkId, status, callback) {
     db.run('UPDATE checks SET status = ? WHERE id = ?', [status, checkId], callback);
 }
 
+/** Top N borrowers by current credit limit. */
+function getTopCreditLimits(limit, callback) {
+    const n = Math.max(1, parseInt(limit, 10) || 50);
+    db.all(
+        'SELECT borrower_formbar_user_id AS user_id, current_limit, paid_off_count ' +
+        'FROM credit_limits ORDER BY current_limit DESC, paid_off_count DESC, borrower_formbar_user_id ASC LIMIT ?',
+        [n],
+        (err, rows) => {
+            if (err) return callback(err, null);
+            callback(null, rows || []);
+        }
+    );
+}
+
+/** Upsert local users cache keyed by Formbar ID + display name. */
+function upsertFormbarUser(formbarId, displayName, callback) {
+    const done = typeof callback === 'function' ? callback : () => {};
+    if (formbarId == null || !displayName) return done();
+
+    db.get('SELECT id FROM users WHERE formbar_id = ?', [formbarId], (err, byFormbar) => {
+        if (err) return done(err);
+        if (byFormbar) {
+            return db.run('UPDATE users SET username = ? WHERE id = ?', [displayName, byFormbar.id], done);
+        }
+        db.get('SELECT id, formbar_id FROM users WHERE username = ?', [displayName], (err2, byName) => {
+            if (err2) return done(err2);
+            if (byName) {
+                if (byName.formbar_id == null) {
+                    return db.run('UPDATE users SET formbar_id = ? WHERE id = ?', [formbarId, byName.id], done);
+                }
+            }
+            db.run(
+                'INSERT INTO users (username, formbar_id) VALUES (?, ?)',
+                [displayName, formbarId],
+                (insertErr) => {
+                    if (!insertErr) return done();
+                    db.run(
+                        'UPDATE users SET username = ? WHERE formbar_id = ?',
+                        [displayName, formbarId],
+                        done
+                    );
+                }
+            );
+        });
+    });
+}
+
+/** Resolve display names for Formbar user IDs (local cache, then Formbar API). */
+async function resolveUserNames(ids) {
+    const unique = [...new Set(
+        (ids || [])
+            .filter(id => id != null && id !== '')
+            .map(id => Number(id))
+            .filter(id => !isNaN(id) && id > 0)
+    )];
+    const names = {};
+    if (unique.length === 0) return names;
+
+    await Promise.all(unique.map(async (id) => {
+        const cached = await new Promise((resolve) => {
+            db.get('SELECT username FROM users WHERE formbar_id = ?', [id], (err, row) => {
+                resolve(err || !row ? null : row.username);
+            });
+        });
+        if (cached) {
+            names[id] = cached;
+            return;
+        }
+        const remote = await formbarApi.getUserById(FORMBAR_API_URL, API_KEY, id);
+        if (remote && remote.displayName) {
+            names[id] = remote.displayName;
+            upsertFormbarUser(id, remote.displayName);
+        }
+    }));
+
+    return names;
+}
+
 // Routes
 app.get('/', isAuthenticated, (req, res) => {
     const userId = req.session.userId;
@@ -288,12 +411,11 @@ app.get('/login', (req, res) => {
         req.session.user = tokenData.displayName;
         req.session.userId = tokenData.id; // Store Formbar user ID
 
-        //Save user to database if not exists
-        db.run('INSERT OR IGNORE INTO users (username) VALUES (?)', [tokenData.displayName], function (err) {
+        upsertFormbarUser(tokenData.id, tokenData.displayName, function (err) {
             if (err) {
                 return console.error(err.message);
             }
-            console.log(`User ${tokenData.displayName} saved to database.`);
+            console.log(`User ${tokenData.displayName} (Formbar ID ${tokenData.id}) saved to database.`);
         });
         
         res.redirect('/');
@@ -329,11 +451,16 @@ app.get('/admin', isAuthenticated, (req, res) => {
                 console.error('Error loading admin data:', err);
                 return res.status(500).send('Error loading admin data');
             }
-            res.render('admin', {
-                user: req.session.user,
-                userId,
-                isAdmin: true,
-                users: rows || []
+            const users = rows || [];
+            const ids = users.map(u => u.user_id).concat([userId]);
+            resolveUserNames(ids).then((userNames) => {
+                res.render('admin', {
+                    user: req.session.user,
+                    userId,
+                    isAdmin: true,
+                    users,
+                    userNames
+                });
             });
         }
     );
@@ -371,13 +498,25 @@ app.get('/credit', isAuthenticated, (req, res) => {
                         return res.status(500).send('Error loading credit data');
                     }
 
-                    res.render('credit', {
-                        user: req.session.user,
-                        creditLimit: limitData.current_limit,
-                        creditBalance: balanceData.credit_balance,
-                        activeLoan: activeLoan,
-                        loanHistory: loanHistory || [],
-                        isAdmin: userId === LENDER_USER_ID
+                    getTopCreditLimits(50, (hsErr, highscores) => {
+                        if (hsErr) {
+                            console.error('Error loading credit limit highscores:', hsErr);
+                        }
+                        const board = highscores || [];
+                        const ids = board.map((r) => r.user_id);
+                        resolveUserNames(ids).then((userNames) => {
+                            res.render('credit', {
+                                user: req.session.user,
+                                userId,
+                                creditLimit: limitData.current_limit,
+                                creditBalance: balanceData.credit_balance,
+                                activeLoan: activeLoan,
+                                loanHistory: loanHistory || [],
+                                highscores: board,
+                                userNames,
+                                isAdmin: userId === LENDER_USER_ID
+                            });
+                        });
                     });
                 });
             });
@@ -762,10 +901,17 @@ app.get('/checks', isAuthenticated, (req, res) => {
             delete safe.pin_for_redemption;
             return safe;
         });
-        res.render('checks', {
-            user: req.session.user,
-            userId: userId,
-            checks: safeChecks
+        const ids = [];
+        safeChecks.forEach(c => {
+            ids.push(c.sender_formbar_user_id, c.receiver_formbar_user_id);
+        });
+        resolveUserNames(ids).then((userNames) => {
+            res.render('checks', {
+                user: req.session.user,
+                userId: userId,
+                checks: safeChecks,
+                userNames
+            });
         });
     });
 });
@@ -811,10 +957,13 @@ app.get('/checks/:id', (req, res, next) => {
                     setCheckStatus(checkId, result.success ? 'completed' : 'failed', () => {});
                     const safeCheck = { ...check };
                     delete safeCheck.pin_for_redemption;
-                    res.render('check-cashed', {
-                        check: safeCheck,
-                        receiverId,
-                        success: result.success
+                    resolveUserNames([receiverId, check.sender_formbar_user_id]).then((userNames) => {
+                        res.render('check-cashed', {
+                            check: safeCheck,
+                            receiverId,
+                            success: result.success,
+                            userNames
+                        });
                     });
                 });
             });
@@ -890,16 +1039,19 @@ function renderCheckDetail(req, res, check, userId) {
     const statusPageUrl = `${THIS_URL}/checks/${checkId}`;
     const safeCheck = { ...check };
     delete safeCheck.pin_for_redemption;
-    QRCode.toDataURL(statusPageUrl, { type: 'image/png', margin: 2 }, (err, qrDataUrl) => {
-        if (err) {
-            console.error('QR generation error:', err);
-            qrDataUrl = '';
-        }
-        res.render('check-detail', {
-            user: req.session.user,
-            check: safeCheck,
-            qrDataUrl,
-            isSender
+    resolveUserNames([safeCheck.sender_formbar_user_id, safeCheck.receiver_formbar_user_id]).then((userNames) => {
+        QRCode.toDataURL(statusPageUrl, { type: 'image/png', margin: 2 }, (err, qrDataUrl) => {
+            if (err) {
+                console.error('QR generation error:', err);
+                qrDataUrl = '';
+            }
+            res.render('check-detail', {
+                user: req.session.user,
+                check: safeCheck,
+                qrDataUrl,
+                isSender,
+                userNames
+            });
         });
     });
 }
