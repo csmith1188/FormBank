@@ -2,35 +2,6 @@
 // Uses Socket.io to communicate with Formbar system
 
 /**
- * Fetch a Formbar user by ID via REST API.
- * @param {string} formbarBaseUrl - Formbar base URL (no trailing slash)
- * @param {string} apiKey - Formbar API key
- * @param {number|string} userId - Formbar user ID
- * @returns {Promise<{id: number, displayName: string}|null>}
- */
-async function getUserById(formbarBaseUrl, apiKey, userId) {
-    if (userId == null || userId === '') return null;
-    const base = String(formbarBaseUrl || '').replace(/\/$/, '');
-    if (!base) return null;
-
-    try {
-        const res = await fetch(`${base}/api/user/${encodeURIComponent(userId)}`, {
-            headers: { api: apiKey || '' }
-        });
-        if (!res.ok) {
-            console.warn(`Formbar getUserById(${userId}) failed: HTTP ${res.status}`);
-            return null;
-        }
-        const data = await res.json();
-        if (!data || data.error || data.displayName == null) return null;
-        return { id: data.id, displayName: data.displayName };
-    } catch (err) {
-        console.warn(`Formbar getUserById(${userId}) error:`, err.message);
-        return null;
-    }
-}
-
-/**
  * Transfer digipogs from one user to another via Formbar
  * Based on Formbar.js documentation: https://github.com/csmith1188/Formbar.js/wiki/Digipogs
  * @param {Object} socket - Socket.io client instance
@@ -131,7 +102,6 @@ function transferDigipogs(socket, fromUserId, toUserId, amount, memo, pin, isPoo
 }
 
 module.exports = {
-    transferDigipogs,
-    getUserById
+    transferDigipogs
 };
 

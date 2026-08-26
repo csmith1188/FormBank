@@ -34,11 +34,11 @@
     <div class="card">
         <% if (success) { %>
         <h1>Check cashed</h1>
-        <p>Check #<%= check.id %> has been cashed for <strong><%- formbarUserLink(receiverId, userNames) %></strong>.</p>
+        <p>Check #<%= check.id %> has been cashed for <strong>User #<%= receiverId %></strong>.</p>
         <p class="success"><%= check.amount %> digipogs have been transferred.</p>
         <% } else { %>
         <h1>Redeem failed</h1>
-        <p>Check #<%= check.id %> was assigned to <strong><%- formbarUserLink(receiverId, userNames) %></strong>, but the transfer did not complete.</p>
+        <p>Check #<%= check.id %> was assigned to <strong>User #<%= receiverId %></strong>, but the transfer did not complete.</p>
         <p class="failed">Please contact support or try again later.</p>
         <% } %>
         <p class="muted">No login required for this redemption.</p>

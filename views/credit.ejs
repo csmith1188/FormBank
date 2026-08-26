@@ -55,16 +55,6 @@
             font-weight: bold;
             color: #2E7D32;
         }
-        .stat-card .sub {
-            color: #666;
-            font-size: 13px;
-            margin-top: 6px;
-        }
-        .score-poor { color: #c62828 !important; }
-        .score-fair { color: #ef6c00 !important; }
-        .score-good { color: #2E7D32 !important; }
-        .score-very-good { color: #1565c0 !important; }
-        .score-exceptional { color: #6a1b9a !important; }
         .section {
             background: white;
             padding: 25px;
@@ -189,16 +179,6 @@
         tr:hover {
             background: #f8f9fa;
         }
-        tr.highscore-you {
-            background: #E8F5E9;
-        }
-        tr.highscore-you:hover {
-            background: #C8E6C9;
-        }
-        .rank-medal {
-            font-weight: 700;
-            color: #2E7D32;
-        }
         .status-badge {
             padding: 4px 12px;
             border-radius: 12px;
@@ -250,34 +230,13 @@
         </div>
 
         <div class="stats">
-            <%
-                var scoreClass = 'score-fair';
-                if (creditScore >= 800) scoreClass = 'score-exceptional';
-                else if (creditScore >= 740) scoreClass = 'score-very-good';
-                else if (creditScore >= 670) scoreClass = 'score-good';
-                else if (creditScore < 580) scoreClass = 'score-poor';
-                var interestPct = (interestRate * 100).toFixed(1);
-                var feePct = (checkFeeRate * 100).toFixed(1);
-            %>
-            <div class="stat-card">
-                <h3>Credit Score</h3>
-                <div class="value <%= scoreClass %>"><%= creditScore %></div>
-                <div class="sub"><%= creditScoreLabel %> (300–850)</div>
-            </div>
             <div class="stat-card">
                 <h3>Credit Limit</h3>
                 <div class="value"><%= creditLimit %></div>
-                <div class="sub">Based on your score</div>
-            </div>
-            <div class="stat-card">
-                <h3>Your Interest Rate</h3>
-                <div class="value"><%= interestPct %>%</div>
-                <div class="sub">On new loans</div>
             </div>
             <div class="stat-card">
                 <h3>Credit Balance</h3>
                 <div class="value"><%= creditBalance %></div>
-                <div class="sub">Overpayment credit</div>
             </div>
             <% if (activeLoan) { %>
             <div class="stat-card">
@@ -292,7 +251,7 @@
             <h2>Active Loan</h2>
             <div class="loan-details">
                 <p><strong>Principal:</strong> <%= activeLoan.principal %> digipogs</p>
-                <p><strong>Interest Rate:</strong> <%= (activeLoan.interest_rate * 100).toFixed(1) %>%</p>
+                <p><strong>Interest Rate:</strong> <%= (activeLoan.interest_rate * 100).toFixed(0) %>%</p>
                 <p><strong>Total Owed:</strong> <%= activeLoan.amount_owed %> digipogs</p>
                 <p><strong>Amount Paid:</strong> <%= activeLoan.amount_paid %> digipogs</p>
                 <p><strong>Remaining:</strong> <strong style="color: #e53e3e;"><%= activeLoan.amount_owed - activeLoan.amount_paid %> digipogs</strong></p>
@@ -300,7 +259,7 @@
             </div>
 
             <div class="alert alert-info">
-                <strong>Note:</strong> When you repay, Formbar applies a 10% tax. If you send R digipogs, the lender receives 0.9*R, but your loan balance decreases by R (the pre-tax amount you sent). Paying down loans improves your credit score.
+                <strong>Note:</strong> When you repay, Formbar applies a 10% tax. If you send R digipogs, the lender receives 0.9*R, but your loan balance decreases by R (the pre-tax amount you sent).
             </div>
 
             <h3 style="margin-top: 20px; margin-bottom: 15px;">Make a Payment</h3>
@@ -323,71 +282,19 @@
         <div class="section">
             <h2>Borrow Digipogs</h2>
             <div class="alert alert-info">
-                <strong>Loan Terms:</strong> Your rate is <strong><%= interestPct %>%</strong> based on a credit score of <strong><%= creditScore %></strong> (<%= creditScoreLabel %>).
-                Borrow up to <strong><%= creditLimit %></strong> digipogs. When you borrow P digipogs, you receive 0.9×P (after 10% Formbar tax) but owe P×<%= (1 + interestRate).toFixed(3) %>.
-                One active loan at a time. Check fees are currently <%= feePct %>% (min <%= checkFeeMin %> digipogs).
+                <strong>Loan Terms:</strong> 20% interest per loan. When you borrow P digipogs, you receive 0.9*P (after 10% Formbar tax) but owe P*1.2. You can only have one active loan at a time.
             </div>
             <form id="borrowForm" onsubmit="return submitBorrow(event)">
                 <div class="form-group">
                     <label for="borrowAmount">Loan Amount (digipogs)</label>
                     <input type="number" id="borrowAmount" name="amount" min="1" max="<%= creditLimit %>" required>
-                    <small style="color: #666;">Maximum: <%= creditLimit %> digipogs · Interest: <%= interestPct %>%</small>
+                    <small style="color: #666;">Maximum: <%= creditLimit %> digipogs</small>
                 </div>
                 <button type="submit" class="btn btn-primary">Request Loan</button>
             </form>
             <div id="borrowMessage" class="message"></div>
         </div>
         <% } %>
-
-        <div class="section">
-            <h2>How your score works</h2>
-            <p style="color:#555; line-height:1.6; margin-bottom:12px;">
-                Scores range from <strong>300–850</strong> (FICO-style). Paying off loans, keeping balances low, building history, and repaying more digipogs raise your score.
-                A higher score unlocks a larger credit limit, lower interest, and smaller check fees.
-            </p>
-            <ul style="color:#555; line-height:1.7; margin-left:20px;">
-                <li><strong>Poor</strong> (300–579): lowest limit, highest interest &amp; fees</li>
-                <li><strong>Fair</strong> (580–669): starter range for new borrowers</li>
-                <li><strong>Good</strong> (670–739): better rates and higher limit</li>
-                <li><strong>Very Good</strong> (740–799): strong terms</li>
-                <li><strong>Exceptional</strong> (800–850): best limit, interest, and fees</li>
-            </ul>
-        </div>
-
-        <div class="section">
-            <h2>Credit Score Highscores</h2>
-            <p style="color:#666; margin-bottom: 8px;">Top 20 credit scores across FormBank.</p>
-            <% if (highscores && highscores.length > 0) { %>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Rank</th>
-                        <th>User</th>
-                        <th>Score</th>
-                        <th>Rating</th>
-                        <th>Credit Limit</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <% highscores.forEach(function(row, index) { %>
-                    <% var isYou = row.user_id === userId; %>
-                    <tr class="<%= isYou ? 'highscore-you' : '' %>">
-                        <td class="rank-medal">#<%= index + 1 %></td>
-                        <td>
-                            <%- formbarUserLink(row.user_id, userNames) %>
-                            <% if (isYou) { %> <span style="color:#2E7D32; font-weight:600;">(you)</span><% } %>
-                        </td>
-                        <td><strong><%= row.credit_score %></strong></td>
-                        <td><%= row.score_label %></td>
-                        <td><%= row.current_limit %> digipogs</td>
-                    </tr>
-                    <% }); %>
-                </tbody>
-            </table>
-            <% } else { %>
-            <p style="color: #666;">No scores yet. Borrow and repay to appear on the board.</p>
-            <% } %>
-        </div>
 
         <div class="section">
             <h2>Loan History</h2>
@@ -397,7 +304,6 @@
                     <tr>
                         <th>Date</th>
                         <th>Principal</th>
-                        <th>Rate</th>
                         <th>Total Owed</th>
                         <th>Amount Paid</th>
                         <th>Status</th>
@@ -408,7 +314,6 @@
                     <tr>
                         <td><%= new Date(loan.created_at).toLocaleDateString() %></td>
                         <td><%= loan.principal %> digipogs</td>
-                        <td><%= (loan.interest_rate * 100).toFixed(1) %>%</td>
                         <td><%= loan.amount_owed %> digipogs</td>
                         <td><%= loan.amount_paid %> digipogs</td>
                         <td>

@@ -76,8 +76,8 @@
         <div class="section">
             <h2>Check details</h2>
             <div class="check-details">
-                <p><strong>From (sender):</strong> <%- formbarUserLink(check.sender_formbar_user_id, userNames) %></p>
-                <p><strong>To (receiver):</strong> <% if (check.receiver_formbar_user_id != null) { %><%- formbarUserLink(check.receiver_formbar_user_id, userNames) %><% } else { %>Anyone (first to open this page redeems)<% } %></p>
+                <p><strong>From (sender):</strong> User #<%= check.sender_formbar_user_id %></p>
+                <p><strong>To (receiver):</strong> <% if (check.receiver_formbar_user_id != null) { %>User #<%= check.receiver_formbar_user_id %><% } else { %>Anyone (first to open this page redeems)<% } %></p>
                 <p><strong>Amount:</strong> <%= check.amount %> digipogs</p>
                 <p><strong>Fee charged:</strong> <%= check.fee_charged %> digipogs</p>
                 <p><strong>Status:</strong>
