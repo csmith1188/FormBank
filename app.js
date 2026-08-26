@@ -110,7 +110,7 @@ const FORMBAR_URL = (process.env.FORMBAR_URL || process.env.AUTH_URL || 'https:/
     .replace(/\/$/, '') || 'https://formbar.yorktechapps.com';
 /** When true, compound interest runs every 30 minutes (each tick = one simulated day). */
 const COMPOUND_TEST = ['1', 'true', 'yes', 'on'].includes(String(process.env.COMPOUND_TEST || '').toLowerCase());
-const COMPOUND_TEST_INTERVAL_MS = 30 * 60 * 1000;
+const COMPOUND_TEST_INTERVAL_MS = 60 * 1000;
 
 // Middleware
 app.set('view engine', 'ejs');
