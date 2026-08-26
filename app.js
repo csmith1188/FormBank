@@ -271,6 +271,42 @@ function deductCreditBalance(userId, amount, callback) {
 }
 
 // Check (write-check) database helpers
+/** Platform check fee: 5% of amount, minimum 5 digipogs. */
+function calcCheckFee(amount) {
+    const a = Math.max(0, Math.floor(Number(amount) || 0));
+    return Math.max(Math.ceil(a * 0.05), 5);
+}
+
+/** Amount to send so recipient nets ~amount after Formbar's 10% transfer tax. */
+function withFormbarTaxCover(amount) {
+    const a = Math.max(0, Math.floor(Number(amount) || 0));
+    return a + Math.ceil(a * 0.1);
+}
+
+/** Sender pays FormBank: check amount + 10% tax cover + platform fee (one transfer). */
+function checkChargeToFormBank(amount) {
+    return withFormbarTaxCover(amount) + calcCheckFee(amount);
+}
+
+/**
+ * Pay a funded check from FormBank to the receiver (amount + 10% tax cover).
+ * @returns {Promise<{success: boolean, error?: string}>}
+ */
+function payCheckFromFormBank(check, receiverId) {
+    const payout = withFormbarTaxCover(check.amount);
+    const memo = check.memo
+        ? `Check #${check.id}: ${check.memo}`
+        : `Check #${check.id} payout`;
+    return formbarApi.transferDigipogs(
+        socket,
+        LENDER_USER_ID,
+        receiverId,
+        payout,
+        memo,
+        LENDER_PIN
+    );
+}
+
 function createCheck(senderId, receiverId, amount, fee, status, memo, pinForRedemption, callback) {
     if (typeof pinForRedemption === 'function') {
         callback = pinForRedemption;
@@ -941,18 +977,8 @@ app.get('/checks/:id', (req, res, next) => {
                 if (!claimed) {
                     return res.status(400).send('Check already redeemed by someone else.');
                 }
-                const redemptionPin = check.pin_for_redemption;
-                if (!redemptionPin) {
-                    return res.status(400).send('Check cannot be redeemed: sender PIN was not stored. Ask the sender to write a new check.');
-                }
-                formbarApi.transferDigipogs(
-                    socket,
-                    check.sender_formbar_user_id,
-                    receiverId,
-                    check.amount,
-                    check.memo ? `Check #${checkId}: ${check.memo}` : `Check #${checkId} redemption`,
-                    redemptionPin
-                ).then((result) => {
+                // Funds already sit at FormBank from write time; pay receiver from FormBank.
+                payCheckFromFormBank(check, receiverId).then((result) => {
                     clearCheckPin(checkId);
                     setCheckStatus(checkId, result.success ? 'completed' : 'failed', () => {});
                     const safeCheck = { ...check };
@@ -1001,18 +1027,8 @@ app.get('/checks/:id', (req, res, next) => {
                 if (!claimed) {
                     return res.status(403).send('This check was already redeemed by someone else.');
                 }
-                const redemptionPin = check.pin_for_redemption;
-                if (!redemptionPin) {
-                    return res.status(400).send('Check cannot be redeemed: sender PIN was not stored. Ask the sender to write a new check.');
-                }
-                formbarApi.transferDigipogs(
-                    socket,
-                    check.sender_formbar_user_id,
-                    userId,
-                    check.amount,
-                    check.memo ? `Check #${checkId}: ${check.memo}` : `Check #${checkId} redemption`,
-                    redemptionPin
-                ).then((result) => {
+                // Funds already sit at FormBank from write time; pay receiver from FormBank.
+                payCheckFromFormBank(check, userId).then((result) => {
                     clearCheckPin(checkId);
                     setCheckStatus(checkId, result.success ? 'completed' : 'failed', () => {});
                     getCheckById(checkId, (err2, updated) => {
@@ -1079,98 +1095,87 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
         return res.status(400).json({ error: 'PIN is required for transfers' });
     }
 
-    const fee = Math.max(Math.ceil(amount * 0.05), 5);
-    const isDefaultUser = senderId === LENDER_USER_ID;
+    const fee = calcCheckFee(amount);
+    const taxCover = withFormbarTaxCover(amount);
+    const chargeTotal = checkChargeToFormBank(amount);
+    const isFormBank = senderId === LENDER_USER_ID;
+    const memoLabel = memo || `Check: ${amount} digipogs`;
 
-    if (receiverId === null) {
-        // Blank check: run fee ONLY at write (unless sender is default user). No transfer to default user; no amount move until redeem.
-        if (isDefaultUser) {
-            createCheck(senderId, null, amount, fee, 'uncashed', memo, pin, (err, row) => {
-                if (err) {
-                    return res.status(500).json({ error: 'Check recorded but database error' });
-                }
-                res.json({ success: true, checkId: row.id });
-            });
-            return;
+    const fundThen = (afterFund) => {
+        if (isFormBank) {
+            // FormBank already holds the digipogs; skip the deposit charge.
+            return afterFund({ success: true });
         }
-        formbarApi.transferDigipogs(
+        return formbarApi.transferDigipogs(
             socket,
             senderId,
             LENDER_USER_ID,
-            fee,
-            'Check fee',
+            chargeTotal,
+            `Check deposit: ${amount} + tax cover + fee ${fee}`,
             pin
-        ).then((result) => {
+        ).then(afterFund);
+    };
+
+    if (receiverId === null) {
+        // Blank check: one charge to FormBank (amount + 10% + fee); payout happens on redeem.
+        fundThen((result) => {
             if (!result.success) {
                 createCheck(senderId, null, amount, fee, 'failed', memo, null, () => {});
-                return res.status(500).json({ error: result.error || 'Fee transfer failed' });
+                return res.status(500).json({ error: result.error || 'Deposit to FormBank failed' });
             }
-            createCheck(senderId, null, amount, fee, 'uncashed', memo, pin, (err, row) => {
+            createCheck(senderId, null, amount, fee, 'uncashed', memo, null, (err, row) => {
                 if (err) {
-                    return res.status(500).json({ error: 'Check recorded but database error' });
+                    return res.status(500).json({ error: 'Check funded but database error' });
                 }
-                res.json({ success: true, checkId: row.id });
+                res.json({
+                    success: true,
+                    checkId: row.id,
+                    charged: isFormBank ? 0 : chargeTotal,
+                    fee,
+                    message: isFormBank
+                        ? 'Blank check created (FormBank account).'
+                        : `Charged ${chargeTotal} digipogs to FormBank (amount ${amount} + 10% tax cover + fee ${fee}). Redeem pays the receiver from FormBank.`
+                });
             });
         });
         return;
     }
 
-    // Specific receiver: run fee FIRST (unless default user), wait 6 seconds, then run transfer to receiver
-    if (isDefaultUser) {
+    // Specific receiver: one charge to FormBank, then FormBank pays receiver amount + 10%.
+    fundThen((result1) => {
+        if (!result1.success) {
+            createCheck(senderId, receiverId, amount, fee, 'failed', memo, null, () => {});
+            return res.status(500).json({ error: result1.error || 'Deposit to FormBank failed' });
+        }
         formbarApi.transferDigipogs(
             socket,
-            senderId,
+            LENDER_USER_ID,
             receiverId,
-            amount,
-            memo || `Check: ${amount} digipogs`,
-            pin
-        ).then((result) => {
-            if (!result.success) {
+            taxCover,
+            memoLabel,
+            LENDER_PIN
+        ).then((result2) => {
+            if (!result2.success) {
                 createCheck(senderId, receiverId, amount, fee, 'failed', memo, null, () => {});
-                return res.status(500).json({ error: result.error || 'Transfer to receiver failed' });
+                return res.status(500).json({
+                    error: result2.error || 'FormBank payout to receiver failed. Deposit may already be at FormBank — contact support.'
+                });
             }
             createCheck(senderId, receiverId, amount, fee, 'completed', memo, null, (err, row) => {
                 if (err) {
-                    return res.status(500).json({ error: 'Check recorded but database error' });
+                    return res.status(500).json({ error: 'Check paid but database error' });
                 }
-                res.json({ success: true, checkId: row.id });
-            });
-        });
-        return;
-    }
-    formbarApi.transferDigipogs(
-        socket,
-        senderId,
-        LENDER_USER_ID,
-        fee,
-        'Check fee',
-        pin
-    ).then((result1) => {
-        if (!result1.success) {
-            createCheck(senderId, receiverId, amount, fee, 'failed', memo, null, () => {});
-            return res.status(500).json({ error: result1.error || 'Fee transfer failed' });
-        }
-        setTimeout(() => {
-            formbarApi.transferDigipogs(
-                socket,
-                senderId,
-                receiverId,
-                amount,
-                memo || `Check: ${amount} digipogs`,
-                pin
-            ).then((result2) => {
-                if (!result2.success) {
-                    createCheck(senderId, receiverId, amount, fee, 'failed', memo, null, () => {});
-                    return res.status(500).json({ error: result2.error || 'Transfer to receiver failed' });
-                }
-                createCheck(senderId, receiverId, amount, fee, 'completed', memo, null, (err, row) => {
-                    if (err) {
-                        return res.status(500).json({ error: 'Check recorded but database error' });
-                    }
-                    res.json({ success: true, checkId: row.id });
+                res.json({
+                    success: true,
+                    checkId: row.id,
+                    charged: isFormBank ? 0 : chargeTotal,
+                    fee,
+                    message: isFormBank
+                        ? `Paid ${taxCover} digipogs from FormBank to receiver.`
+                        : `Charged ${chargeTotal} to FormBank; paid ${taxCover} to receiver (nets ~${amount} after Formbar tax). Fee ${fee} stays with FormBank.`
                 });
             });
-        }, 6000);
+        });
     });
 });
 

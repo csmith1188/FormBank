@@ -13,11 +13,11 @@
 
 ### Checks
 - **Write checks** to a specific user (Formbar user ID) or leave receiver blank
-- **Fee**: 5% of the amount or 5 digipogs, whichever is greater (charged when the check is written; skipped if the writer is the default/lender user)
-- **Specific receiver**: Fee is sent first, then after 6 seconds the amount is transferred to the receiver
-- **Blank check**: Only the fee is charged at write time; the amount is transferred when someone redeems by visiting the check status page (logged in or with `?receiverId=`). Sender’s PIN is stored for that one-time redemption
-- **Check status page**: Sender and receiver can view check details and a QR code for the status URL. Only they (and redeemer for blank checks) can access the page
-- **Default user**: If the user writing the check is the lender (default user in `.env`), no fee transaction is made; the check is created (and transfer runs for a specific receiver)
+- **One deposit**: sender pays FormBank once for amount + 10% (Formbar tax cover) + fee (5% or 5 digipogs min)
+- **Payout**: FormBank then sends amount + 10% to the receiver so they net ~the check amount after tax
+- **Blank check**: same deposit at write time; FormBank pays the redeemer when someone opens the check status page
+- **Check status page**: Sender and receiver can view check details and a QR code for the status URL
+- **FormBank account**: If the writer is the lender (`LENDER_USER_ID`), the deposit charge is skipped (funds already at FormBank)
 
 ## Setup
 
@@ -77,9 +77,9 @@ The app is available at `http://localhost:3000` (or your configured `PORT`).
 - One active loan per user; every time your total repayments reach your current credit limit, that limit increases by `CREDIT_LIMIT_STEP` (default 500)
 
 ### Checks
-- **With receiver ID**: Fee (sender → lender) is run first; after 6 seconds, amount is transferred sender → receiver. Check is recorded as completed or failed.
-- **No receiver (blank)**: Only the fee is charged at write time. When the check status page is opened by a logged-in user (first viewer) or with `?receiverId=...`, that user is set as receiver and the amount is transferred sender → receiver using the stored PIN; then the PIN is cleared.
-- **Default user**: When the writer’s user ID equals `LENDER_USER_ID`, the fee step is skipped and the check is created (and, for a specific receiver, the transfer runs without the 6-second delay).
+- **With receiver ID**: One transfer sender → FormBank (amount + 10% + fee), then FormBank → receiver (amount + 10%) using `LENDER_PIN`.
+- **No receiver (blank)**: Same deposit to FormBank at write time. On redeem, FormBank → receiver (amount + 10%).
+- **FormBank writer**: When the writer’s user ID equals `LENDER_USER_ID`, the deposit step is skipped and only the payout runs (for a specific receiver).
 
 ## Main routes
 
