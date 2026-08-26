@@ -8,6 +8,7 @@ const { io } = require('socket.io-client');
 const sqlite3 = require('sqlite3').verbose();
 const SQLiteStore = require('connect-sqlite3')(session);
 const formbarApi = require('./formbarApi');
+const creditScore = require('./creditScore');
 const QRCode = require('qrcode');
 
 
@@ -38,6 +39,37 @@ const db = new sqlite3.Database('./db/database.db', (err) => {
                 });
             }
         );
+        // Ensure users table has formbar_id for ID → username cache
+        db.run(
+            'CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username VARCHAR(50) UNIQUE NOT NULL, formbar_id INTEGER UNIQUE)',
+            (err) => {
+                if (err) return console.error('Error ensuring users table:', err);
+                db.all('PRAGMA table_info(users)', (err, cols) => {
+                    if (err || !cols) return;
+                    if (!cols.some(c => c.name === 'formbar_id')) {
+                        db.run('ALTER TABLE users ADD COLUMN formbar_id INTEGER', (alterErr) => {
+                            if (alterErr) return console.error('Error adding formbar_id to users:', alterErr);
+                            db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_formbar_id ON users(formbar_id)', () => {});
+                        });
+                    } else {
+                        db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_formbar_id ON users(formbar_id)', () => {});
+                    }
+                });
+            }
+        );
+        // Ensure credit_limits has credit_score column
+        db.run(
+            'CREATE TABLE IF NOT EXISTS credit_limits (borrower_formbar_user_id INTEGER PRIMARY KEY, current_limit INTEGER DEFAULT 250, paid_off_count INTEGER DEFAULT 0, credit_score INTEGER DEFAULT 580)',
+            (err) => {
+                if (err) return console.error('Error ensuring credit_limits table:', err);
+                db.all('PRAGMA table_info(credit_limits)', (err, cols) => {
+                    if (err || !cols) return;
+                    if (!cols.some(c => c.name === 'credit_score')) {
+                        db.run('ALTER TABLE credit_limits ADD COLUMN credit_score INTEGER DEFAULT 580', () => {});
+                    }
+                });
+            }
+        );
     }
 });
 
@@ -50,12 +82,33 @@ const LOGIN_REDIRECT_URL = `${THIS_URL}/login`;
 const API_KEY = process.env.API_KEY || 'your_api_key';
 const LENDER_USER_ID = parseInt(process.env.LENDER_USER_ID) || 1;
 const LENDER_PIN = parseInt(process.env.LENDER_PIN) || 3639; // PIN must be a number per Formbar docs
+const FORMBAR_URL = (process.env.FORMBAR_URL || process.env.AUTH_URL || 'https://formbar.yorktechapps.com')
+    .replace(/\/oauth\/?$/, '')
+    .replace(/\/$/, '') || 'https://formbar.yorktechapps.com';
 
 // Middleware
 app.set('view engine', 'ejs');
 app.use(express.static('public'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/** Render a Formbar profile link for a user ID (username from map, or User #id fallback). */
+app.locals.formbarUserLink = function(formbarUserId, userNames) {
+    if (formbarUserId == null || formbarUserId === '') return 'Anyone (uncashed)';
+    const id = Number(formbarUserId);
+    const name = (userNames && (userNames[id] || userNames[String(id)])) || `User #${id}`;
+    const url = `${FORMBAR_URL}/profile/${id}`;
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer">${escapeHtml(name)}</a>`;
+};
 
 app.use(session({
     store: new SQLiteStore({ db: 'sessions.db', dir: './db' }),
@@ -71,14 +124,22 @@ function isAuthenticated(req, res, next) {
 
 // Database helper functions for credit system
 function getCreditLimit(userId, callback) {
-    db.get('SELECT current_limit, paid_off_count FROM credit_limits WHERE borrower_formbar_user_id = ?', [userId], (err, row) => {
+    db.get('SELECT current_limit, paid_off_count, credit_score FROM credit_limits WHERE borrower_formbar_user_id = ?', [userId], (err, row) => {
         if (err) return callback(err, null);
         if (!row) {
-            // Initialize with default limit
-            db.run('INSERT INTO credit_limits (borrower_formbar_user_id, current_limit, paid_off_count) VALUES (?, 250, 0)', [userId], function(err) {
-                if (err) return callback(err, null);
-                callback(null, { current_limit: 250, paid_off_count: 0 });
-            });
+            const starter = creditScore.getCreditTerms([]);
+            db.run(
+                'INSERT INTO credit_limits (borrower_formbar_user_id, current_limit, paid_off_count, credit_score) VALUES (?, ?, 0, ?)',
+                [userId, starter.creditLimit, starter.score],
+                function(err) {
+                    if (err) return callback(err, null);
+                    callback(null, {
+                        current_limit: starter.creditLimit,
+                        paid_off_count: 0,
+                        credit_score: starter.score
+                    });
+                }
+            );
         } else {
             callback(null, row);
         }
@@ -108,15 +169,80 @@ function getLoanHistory(userId, callback) {
     db.all('SELECT * FROM credit_loans WHERE borrower_formbar_user_id = ? ORDER BY created_at DESC', [userId], callback);
 }
 
-function createLoan(userId, principal, callback) {
-    const interestRate = 0.20;
-    const amountOwed = Math.ceil(principal * 1.20);
+/**
+ * Recompute credit score + limit from loan history and persist to credit_limits.
+ */
+function refreshCreditProfile(userId, callback) {
+    getLoanHistory(userId, (err, loans) => {
+        if (err) return callback(err, null);
+        const list = loans || [];
+        const terms = creditScore.getCreditTerms(list);
+        const paidCount = list.filter((l) => l.status === 'paid').length;
+        db.run(
+            'INSERT INTO credit_limits (borrower_formbar_user_id, current_limit, paid_off_count, credit_score) VALUES (?, ?, ?, ?) ' +
+            'ON CONFLICT(borrower_formbar_user_id) DO UPDATE SET current_limit = excluded.current_limit, paid_off_count = excluded.paid_off_count, credit_score = excluded.credit_score',
+            [userId, terms.creditLimit, paidCount, terms.score],
+            (err2) => {
+                if (err2) return callback(err2, null);
+                callback(null, terms);
+            }
+        );
+    });
+}
+
+/** Top N credit scores (recomputed from loan history). */
+function getTopCreditScores(limit, callback) {
+    const n = Math.max(1, parseInt(limit, 10) || 20);
+    db.all(
+        'SELECT borrower_formbar_user_id AS user_id FROM credit_limits ' +
+        'UNION SELECT DISTINCT borrower_formbar_user_id AS user_id FROM credit_loans',
+        [],
+        (err, users) => {
+            if (err) return callback(err, null);
+            const list = users || [];
+            if (list.length === 0) return callback(null, []);
+
+            let pending = list.length;
+            const results = [];
+            list.forEach((u) => {
+                getLoanHistory(u.user_id, (histErr, loans) => {
+                    const terms = creditScore.getCreditTerms(histErr ? [] : (loans || []));
+                    results.push({
+                        user_id: u.user_id,
+                        credit_score: terms.score,
+                        score_label: terms.scoreLabel,
+                        current_limit: terms.creditLimit
+                    });
+                    // Keep cached score in sync for admin / other views
+                    db.run(
+                        'INSERT INTO credit_limits (borrower_formbar_user_id, current_limit, paid_off_count, credit_score) VALUES (?, ?, ?, ?) ' +
+                        'ON CONFLICT(borrower_formbar_user_id) DO UPDATE SET current_limit = excluded.current_limit, credit_score = excluded.credit_score',
+                        [u.user_id, terms.creditLimit, (loans || []).filter((l) => l.status === 'paid').length, terms.score],
+                        () => {}
+                    );
+                    pending -= 1;
+                    if (pending === 0) {
+                        results.sort((a, b) => {
+                            if (b.credit_score !== a.credit_score) return b.credit_score - a.credit_score;
+                            return b.current_limit - a.current_limit;
+                        });
+                        callback(null, results.slice(0, n));
+                    }
+                });
+            });
+        }
+    );
+}
+
+function createLoan(userId, principal, interestRate, callback) {
+    const rate = typeof interestRate === 'number' ? interestRate : creditScore.interestRateFromScore(creditScore.BASE_SCORE);
+    const amountOwed = Math.ceil(principal * (1 + rate));
     db.run(
         'INSERT INTO credit_loans (borrower_formbar_user_id, principal, interest_rate, amount_owed, amount_paid, status) VALUES (?, ?, ?, ?, 0, ?)',
-        [userId, principal, interestRate, amountOwed, 'active'],
+        [userId, principal, rate, amountOwed, 'active'],
         function(err) {
             if (err) return callback(err, null);
-            callback(null, { id: this.lastID, principal, amountOwed });
+            callback(null, { id: this.lastID, principal, amountOwed, interestRate: rate });
         }
     );
 }
@@ -139,68 +265,6 @@ function updateLoanPayment(loanId, additionalPayment, callback) {
             function(err) {
                 if (err) return callback(err);
                 callback(null, { isPaid, newAmountPaid, amountOwed: loan.amount_owed });
-            }
-        );
-    });
-}
-
-// Recalculate credit limit based on total repayments.
-// Credit limit starts at 250 and increases by +250 whenever
-// the user's total repayments reach their current credit limit.
-function updateCreditLimitFromRepayments(userId, callback) {
-    // Ensure a credit_limits row exists and get current values
-    getCreditLimit(userId, (err, limitRow) => {
-        if (err) return callback(err, null);
-
-        db.get(
-            'SELECT COALESCE(SUM(amount_paid), 0) AS total_repaid FROM credit_loans WHERE borrower_formbar_user_id = ?',
-            [userId],
-            (err, row) => {
-                if (err) return callback(err, null);
-
-                const totalRepaid = row && typeof row.total_repaid === 'number'
-                    ? row.total_repaid
-                    : 0;
-
-                let currentLimit = limitRow.current_limit;
-                let increaseCount = limitRow.paid_off_count || 0;
-                let increments = 0;
-
-                function thresholdForIndex(i) {
-                    // i = 0 → first increase at 250
-                    // i = 1 → second increase at 250 + 500 = 750
-                    // i = 2 → third increase at 250 + 500 + 750 = 1500, etc.
-                    const n = i + 1;
-                    return 250 * (n * (n + 1) / 2);
-                }
-
-                // Apply as many increases as total repayments allow
-                while (totalRepaid >= thresholdForIndex(increaseCount)) {
-                    currentLimit += 250;
-                    increaseCount += 1;
-                    increments += 1;
-                }
-
-                if (increments === 0) {
-                    return callback(null, {
-                        increased: false,
-                        increments: 0,
-                        newLimit: currentLimit
-                    });
-                }
-
-                db.run(
-                    'UPDATE credit_limits SET current_limit = ?, paid_off_count = ? WHERE borrower_formbar_user_id = ?',
-                    [currentLimit, increaseCount, userId],
-                    (err) => {
-                        if (err) return callback(err, null);
-                        callback(null, {
-                            increased: true,
-                            increments,
-                            newLimit: currentLimit
-                        });
-                    }
-                );
             }
         );
     });
@@ -272,6 +336,72 @@ function setCheckStatus(checkId, status, callback) {
     db.run('UPDATE checks SET status = ? WHERE id = ?', [status, checkId], callback);
 }
 
+/** Upsert local users cache keyed by Formbar ID + display name. */
+function upsertFormbarUser(formbarId, displayName, callback) {
+    const done = typeof callback === 'function' ? callback : () => {};
+    if (formbarId == null || !displayName) return done();
+
+    db.get('SELECT id FROM users WHERE formbar_id = ?', [formbarId], (err, byFormbar) => {
+        if (err) return done(err);
+        if (byFormbar) {
+            return db.run('UPDATE users SET username = ? WHERE id = ?', [displayName, byFormbar.id], done);
+        }
+        db.get('SELECT id, formbar_id FROM users WHERE username = ?', [displayName], (err2, byName) => {
+            if (err2) return done(err2);
+            if (byName) {
+                if (byName.formbar_id == null) {
+                    return db.run('UPDATE users SET formbar_id = ? WHERE id = ?', [formbarId, byName.id], done);
+                }
+                // Username taken by a different formbar user — fall through to insert with conflict-safe name
+            }
+            db.run(
+                'INSERT INTO users (username, formbar_id) VALUES (?, ?)',
+                [displayName, formbarId],
+                (insertErr) => {
+                    if (!insertErr) return done();
+                    // Race / unique conflict: update by formbar_id if another row won
+                    db.run(
+                        'UPDATE users SET username = ? WHERE formbar_id = ?',
+                        [displayName, formbarId],
+                        done
+                    );
+                }
+            );
+        });
+    });
+}
+
+/** Resolve display names for Formbar user IDs (local cache, then Formbar API). */
+async function resolveUserNames(ids) {
+    const unique = [...new Set(
+        (ids || [])
+            .filter(id => id != null && id !== '')
+            .map(id => Number(id))
+            .filter(id => !isNaN(id) && id > 0)
+    )];
+    const names = {};
+    if (unique.length === 0) return names;
+
+    await Promise.all(unique.map(async (id) => {
+        const cached = await new Promise((resolve) => {
+            db.get('SELECT username FROM users WHERE formbar_id = ?', [id], (err, row) => {
+                resolve(err || !row ? null : row.username);
+            });
+        });
+        if (cached) {
+            names[id] = cached;
+            return;
+        }
+        const remote = await formbarApi.getUserById(FORMBAR_URL, API_KEY, id);
+        if (remote && remote.displayName) {
+            names[id] = remote.displayName;
+            upsertFormbarUser(id, remote.displayName);
+        }
+    }));
+
+    return names;
+}
+
 // Routes
 app.get('/', isAuthenticated, (req, res) => {
     const userId = req.session.userId;
@@ -288,12 +418,11 @@ app.get('/login', (req, res) => {
         req.session.user = tokenData.displayName;
         req.session.userId = tokenData.id; // Store Formbar user ID
 
-        //Save user to database if not exists
-        db.run('INSERT OR IGNORE INTO users (username) VALUES (?)', [tokenData.displayName], function (err) {
+        upsertFormbarUser(tokenData.id, tokenData.displayName, function (err) {
             if (err) {
                 return console.error(err.message);
             }
-            console.log(`User ${tokenData.displayName} saved to database.`);
+            console.log(`User ${tokenData.displayName} (Formbar ID ${tokenData.id}) saved to database.`);
         });
         
         res.redirect('/');
@@ -319,7 +448,7 @@ app.get('/admin', isAuthenticated, (req, res) => {
     }
 
     db.all(
-        'SELECT cl.borrower_formbar_user_id AS user_id, cl.current_limit, COALESCE(cb.credit_balance, 0) AS credit_balance ' +
+        'SELECT cl.borrower_formbar_user_id AS user_id, cl.current_limit, cl.credit_score, COALESCE(cb.credit_balance, 0) AS credit_balance ' +
         'FROM credit_limits cl ' +
         'LEFT JOIN credit_balances cb ON cb.borrower_formbar_user_id = cl.borrower_formbar_user_id ' +
         'ORDER BY user_id ASC',
@@ -329,11 +458,33 @@ app.get('/admin', isAuthenticated, (req, res) => {
                 console.error('Error loading admin data:', err);
                 return res.status(500).send('Error loading admin data');
             }
-            res.render('admin', {
-                user: req.session.user,
-                userId,
-                isAdmin: true,
-                users: rows || []
+            const users = rows || [];
+            const ids = users.map(u => u.user_id).concat([userId]);
+
+            // Refresh scores/limits so admin always sees current terms
+            let pending = users.length;
+            const finish = () => {
+                resolveUserNames(ids).then((userNames) => {
+                    res.render('admin', {
+                        user: req.session.user,
+                        userId,
+                        isAdmin: true,
+                        users,
+                        userNames,
+                        scoreLabel: creditScore.scoreLabel
+                    });
+                });
+            };
+            if (pending === 0) return finish();
+            users.forEach((u) => {
+                refreshCreditProfile(u.user_id, (errRefresh, terms) => {
+                    if (!errRefresh && terms) {
+                        u.credit_score = terms.score;
+                        u.current_limit = terms.creditLimit;
+                    }
+                    pending -= 1;
+                    if (pending === 0) finish();
+                });
             });
         }
     );
@@ -346,10 +497,9 @@ app.get('/credit', isAuthenticated, (req, res) => {
         return res.status(400).send('User ID not found in session');
     }
 
-    // Get all credit data
-    getCreditLimit(userId, (err, limitData) => {
+    refreshCreditProfile(userId, (err, terms) => {
         if (err) {
-            console.error('Error getting credit limit:', err);
+            console.error('Error refreshing credit profile:', err);
             return res.status(500).send('Error loading credit data');
         }
 
@@ -371,13 +521,30 @@ app.get('/credit', isAuthenticated, (req, res) => {
                         return res.status(500).send('Error loading credit data');
                     }
 
-                    res.render('credit', {
-                        user: req.session.user,
-                        creditLimit: limitData.current_limit,
-                        creditBalance: balanceData.credit_balance,
-                        activeLoan: activeLoan,
-                        loanHistory: loanHistory || [],
-                        isAdmin: userId === LENDER_USER_ID
+                    getTopCreditScores(20, (hsErr, highscores) => {
+                        if (hsErr) {
+                            console.error('Error loading credit highscores:', hsErr);
+                        }
+                        const board = highscores || [];
+                        const ids = board.map((r) => r.user_id);
+                        resolveUserNames(ids).then((userNames) => {
+                            res.render('credit', {
+                                user: req.session.user,
+                                userId,
+                                creditScore: terms.score,
+                                creditScoreLabel: terms.scoreLabel,
+                                creditLimit: terms.creditLimit,
+                                interestRate: terms.interestRate,
+                                checkFeeRate: terms.checkFeeRate,
+                                checkFeeMin: terms.checkFeeMin,
+                                creditBalance: balanceData.credit_balance,
+                                activeLoan: activeLoan,
+                                loanHistory: loanHistory || [],
+                                highscores: board,
+                                userNames,
+                                isAdmin: userId === LENDER_USER_ID
+                            });
+                        });
                     });
                 });
             });
@@ -405,17 +572,16 @@ app.post('/credit/borrow', isAuthenticated, async (req, res) => {
             return res.status(400).json({ error: 'You already have an active loan' });
         }
 
-        // Check credit limit
-        getCreditLimit(userId, (err, limitData) => {
+        refreshCreditProfile(userId, (err, terms) => {
             if (err) {
                 return res.status(500).json({ error: 'Database error' });
             }
-            if (principal > limitData.current_limit) {
-                return res.status(400).json({ error: `Loan amount exceeds your credit limit of ${limitData.current_limit} digipogs` });
+            if (principal > terms.creditLimit) {
+                return res.status(400).json({ error: `Loan amount exceeds your credit limit of ${terms.creditLimit} digipogs` });
             }
 
             // Create loan record first (before transfer)
-            createLoan(userId, principal, (err, loan) => {
+            createLoan(userId, principal, terms.interestRate, (err, loan) => {
                 if (err) {
                     return res.status(500).json({ error: 'Failed to create loan record' });
                 }
@@ -447,7 +613,12 @@ app.post('/credit/borrow', isAuthenticated, async (req, res) => {
                         return res.status(500).json({ error: errorMsg });
                     }
 
-                    res.json({ success: true, message: `Loan of ${principal} digipogs issued successfully. You received ${Math.floor(principal * 0.9)} digipogs (after 10% tax). You owe ${loan.amountOwed} digipogs.` });
+                    refreshCreditProfile(userId, () => {});
+                    const ratePct = Math.round(loan.interestRate * 1000) / 10;
+                    res.json({
+                        success: true,
+                        message: `Loan of ${principal} digipogs issued at ${ratePct}% interest (score ${terms.score}). You received ${Math.floor(principal * 0.9)} digipogs (after 10% tax). You owe ${loan.amountOwed} digipogs.`
+                    });
                 });
             });
         });
@@ -560,19 +731,21 @@ app.post('/credit/repay', isAuthenticated, async (req, res) => {
                                 });
                             }
 
-                            // Recalculate credit limit based on total repayments
-                            updateCreditLimitFromRepayments(userId, (limitErr, limitResult) => {
+                            // Recalculate credit score and limit from loan history
+                            refreshCreditProfile(userId, (limitErr, terms) => {
                                 if (limitErr) {
-                                    console.error('Failed to update credit limit from repayments:', limitErr);
+                                    console.error('Failed to refresh credit profile:', limitErr);
                                 }
 
-                                const limitIncreased = limitResult && limitResult.increased;
+                                const scoreNote = terms
+                                    ? ` Credit score: ${terms.score} (${terms.scoreLabel}); limit: ${terms.creditLimit}.`
+                                    : '';
 
                                 res.json({ 
                                     success: true, 
                                     message: `Repayment of ${actualRepayment} digipogs processed${overpayment > 0 ? ` (${overpayment} digipogs credited to your account)` : ''}.` +
                                         (paymentResult.isPaid ? ' Loan paid off!' : '') +
-                                        (limitIncreased ? ' Your credit limit has increased.' : '')
+                                        scoreNote
                                 });
                             });
                         });
@@ -598,19 +771,21 @@ app.post('/credit/repay', isAuthenticated, async (req, res) => {
                             });
                         }
 
-                        // Recalculate credit limit based on total repayments
-                        updateCreditLimitFromRepayments(userId, (limitErr, limitResult) => {
+                        // Recalculate credit score and limit from loan history
+                        refreshCreditProfile(userId, (limitErr, terms) => {
                             if (limitErr) {
-                                console.error('Failed to update credit limit from repayments:', limitErr);
+                                console.error('Failed to refresh credit profile:', limitErr);
                             }
 
-                            const limitIncreased = limitResult && limitResult.increased;
+                            const scoreNote = terms
+                                ? ` Credit score: ${terms.score} (${terms.scoreLabel}); limit: ${terms.creditLimit}.`
+                                : '';
 
                             res.json({ 
                                 success: true, 
                                 message: `Repayment of ${actualRepayment} digipogs processed using credit balance${overpayment > 0 ? ` (${overpayment} digipogs credited)` : ''}.` +
                                     (paymentResult.isPaid ? ' Loan paid off!' : '') +
-                                    (limitIncreased ? ' Your credit limit has increased.' : '')
+                                    scoreNote
                             });
                         });
                     });
@@ -698,18 +873,20 @@ app.post('/credit/repay/full', isAuthenticated, async (req, res) => {
                                 return res.status(500).json({ error: 'Failed to update loan payment' });
                             }
 
-                            // Loan should be paid now; recalculate credit limit based on total repayments
-                            updateCreditLimitFromRepayments(userId, (limitErr, limitResult) => {
+                            // Loan should be paid now; recalculate credit score and limit
+                            refreshCreditProfile(userId, (limitErr, terms) => {
                                 if (limitErr) {
-                                    console.error('Failed to update credit limit from repayments:', limitErr);
+                                    console.error('Failed to refresh credit profile:', limitErr);
                                 }
 
-                                const limitIncreased = limitResult && limitResult.increased;
+                                const scoreNote = terms
+                                    ? ` Credit score: ${terms.score} (${terms.scoreLabel}); limit: ${terms.creditLimit}.`
+                                    : '';
 
                                 res.json({ 
                                     success: true, 
                                     message: `Full repayment of ${remainingOwed} digipogs processed${creditUsed > 0 ? ` (${creditUsed} from credit balance, ${transferNeeded} transferred)` : ''}. Loan paid off!` +
-                                        (limitIncreased ? ' Your credit limit has increased.' : '')
+                                        scoreNote
                                 });
                             });
                         });
@@ -725,18 +902,20 @@ app.post('/credit/repay/full', isAuthenticated, async (req, res) => {
                             return res.status(500).json({ error: 'Failed to update loan payment' });
                         }
 
-                        // Loan should be paid now; recalculate credit limit based on total repayments
-                        updateCreditLimitFromRepayments(userId, (limitErr, limitResult) => {
+                        // Loan should be paid now; recalculate credit score and limit
+                        refreshCreditProfile(userId, (limitErr, terms) => {
                             if (limitErr) {
-                                console.error('Failed to update credit limit from repayments:', limitErr);
+                                console.error('Failed to refresh credit profile:', limitErr);
                             }
 
-                            const limitIncreased = limitResult && limitResult.increased;
+                            const scoreNote = terms
+                                ? ` Credit score: ${terms.score} (${terms.scoreLabel}); limit: ${terms.creditLimit}.`
+                                : '';
 
                             res.json({ 
                                 success: true, 
                                 message: `Full repayment of ${remainingOwed} digipogs processed using credit balance. Loan paid off!` +
-                                    (limitIncreased ? ' Your credit limit has increased.' : '')
+                                    scoreNote
                             });
                         });
                     });
@@ -762,10 +941,27 @@ app.get('/checks', isAuthenticated, (req, res) => {
             delete safe.pin_for_redemption;
             return safe;
         });
-        res.render('checks', {
-            user: req.session.user,
-            userId: userId,
-            checks: safeChecks
+        const ids = [];
+        safeChecks.forEach(c => {
+            ids.push(c.sender_formbar_user_id, c.receiver_formbar_user_id);
+        });
+        resolveUserNames(ids).then((userNames) => {
+            refreshCreditProfile(userId, (errTerms, terms) => {
+                if (errTerms) {
+                    console.error('Error loading credit terms for checks:', errTerms);
+                }
+                const feeTerms = terms || creditScore.getCreditTerms([]);
+                res.render('checks', {
+                    user: req.session.user,
+                    userId: userId,
+                    checks: safeChecks,
+                    userNames,
+                    creditScore: feeTerms.score,
+                    creditScoreLabel: feeTerms.scoreLabel,
+                    checkFeeRate: feeTerms.checkFeeRate,
+                    checkFeeMin: feeTerms.checkFeeMin
+                });
+            });
         });
     });
 });
@@ -795,26 +991,17 @@ app.get('/checks/:id', (req, res, next) => {
                 if (!claimed) {
                     return res.status(400).send('Check already redeemed by someone else.');
                 }
-                const redemptionPin = check.pin_for_redemption;
-                if (!redemptionPin) {
-                    return res.status(400).send('Check cannot be redeemed: sender PIN was not stored. Ask the sender to write a new check.');
-                }
-                formbarApi.transferDigipogs(
-                    socket,
-                    check.sender_formbar_user_id,
-                    receiverId,
-                    check.amount,
-                    check.memo ? `Check #${checkId}: ${check.memo}` : `Check #${checkId} redemption`,
-                    redemptionPin
-                ).then((result) => {
-                    clearCheckPin(checkId);
+                redeemCheckToReceiver(check, receiverId).then((result) => {
                     setCheckStatus(checkId, result.success ? 'completed' : 'failed', () => {});
                     const safeCheck = { ...check };
                     delete safeCheck.pin_for_redemption;
-                    res.render('check-cashed', {
-                        check: safeCheck,
-                        receiverId,
-                        success: result.success
+                    resolveUserNames([receiverId, check.sender_formbar_user_id]).then((userNames) => {
+                        res.render('check-cashed', {
+                            check: safeCheck,
+                            receiverId,
+                            success: result.success,
+                            userNames
+                        });
                     });
                 });
             });
@@ -852,19 +1039,7 @@ app.get('/checks/:id', (req, res, next) => {
                 if (!claimed) {
                     return res.status(403).send('This check was already redeemed by someone else.');
                 }
-                const redemptionPin = check.pin_for_redemption;
-                if (!redemptionPin) {
-                    return res.status(400).send('Check cannot be redeemed: sender PIN was not stored. Ask the sender to write a new check.');
-                }
-                formbarApi.transferDigipogs(
-                    socket,
-                    check.sender_formbar_user_id,
-                    userId,
-                    check.amount,
-                    check.memo ? `Check #${checkId}: ${check.memo}` : `Check #${checkId} redemption`,
-                    redemptionPin
-                ).then((result) => {
-                    clearCheckPin(checkId);
+                redeemCheckToReceiver(check, userId).then((result) => {
                     setCheckStatus(checkId, result.success ? 'completed' : 'failed', () => {});
                     getCheckById(checkId, (err2, updated) => {
                         if (err2 || !updated) {
@@ -890,16 +1065,19 @@ function renderCheckDetail(req, res, check, userId) {
     const statusPageUrl = `${THIS_URL}/checks/${checkId}`;
     const safeCheck = { ...check };
     delete safeCheck.pin_for_redemption;
-    QRCode.toDataURL(statusPageUrl, { type: 'image/png', margin: 2 }, (err, qrDataUrl) => {
-        if (err) {
-            console.error('QR generation error:', err);
-            qrDataUrl = '';
-        }
-        res.render('check-detail', {
-            user: req.session.user,
-            check: safeCheck,
-            qrDataUrl,
-            isSender
+    resolveUserNames([safeCheck.sender_formbar_user_id, safeCheck.receiver_formbar_user_id]).then((userNames) => {
+        QRCode.toDataURL(statusPageUrl, { type: 'image/png', margin: 2 }, (err, qrDataUrl) => {
+            if (err) {
+                console.error('QR generation error:', err);
+                qrDataUrl = '';
+            }
+            res.render('check-detail', {
+                user: req.session.user,
+                check: safeCheck,
+                qrDataUrl,
+                isSender,
+                userNames
+            });
         });
     });
 }
@@ -927,89 +1105,72 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
         return res.status(400).json({ error: 'PIN is required for transfers' });
     }
 
-    const fee = Math.max(Math.ceil(amount * 0.05), 5);
     const isDefaultUser = senderId === LENDER_USER_ID;
 
-    if (receiverId === null) {
-        // Blank check: run fee ONLY at write (unless sender is default user). No transfer to default user; no amount move until redeem.
-        if (isDefaultUser) {
-            createCheck(senderId, null, amount, fee, 'uncashed', memo, pin, (err, row) => {
-                if (err) {
-                    return res.status(500).json({ error: 'Check recorded but database error' });
-                }
-                res.json({ success: true, checkId: row.id });
-            });
-            return;
+    refreshCreditProfile(senderId, (errTerms, terms) => {
+        if (errTerms) {
+            return res.status(500).json({ error: 'Failed to load credit profile for fee calculation' });
         }
-        formbarApi.transferDigipogs(
-            socket,
-            senderId,
-            LENDER_USER_ID,
-            fee,
-            'Check fee',
-            pin
-        ).then((result) => {
-            if (!result.success) {
-                createCheck(senderId, null, amount, fee, 'failed', memo, null, () => {});
-                return res.status(500).json({ error: result.error || 'Fee transfer failed' });
-            }
-            createCheck(senderId, null, amount, fee, 'uncashed', memo, pin, (err, row) => {
-                if (err) {
-                    return res.status(500).json({ error: 'Check recorded but database error' });
-                }
-                res.json({ success: true, checkId: row.id });
-            });
-        });
-        return;
-    }
+        const fee = isDefaultUser ? 0 : creditScore.checkFeeFromScore(terms.score, amount);
+        writeCheckWithFee(fee);
+    });
 
-    // Specific receiver: run fee FIRST (unless default user), wait 6 seconds, then run transfer to receiver
-    if (isDefaultUser) {
-        formbarApi.transferDigipogs(
-            socket,
-            senderId,
-            receiverId,
-            amount,
-            memo || `Check: ${amount} digipogs`,
-            pin
-        ).then((result) => {
-            if (!result.success) {
-                createCheck(senderId, receiverId, amount, fee, 'failed', memo, null, () => {});
-                return res.status(500).json({ error: result.error || 'Transfer to receiver failed' });
+    function writeCheckWithFee(fee) {
+        const total = amount + fee;
+        const depositMemo = fee > 0
+            ? `FormBank check deposit: ${amount} + ${fee} fee`
+            : `FormBank check deposit: ${amount}`;
+        const payoutMemo = memo || `Check: ${amount} digipogs`;
+
+        // Blank check: deposit amount+fee to FormBank; payout happens on redeem
+        if (receiverId === null) {
+            if (isDefaultUser) {
+                createCheck(senderId, null, amount, fee, 'uncashed', memo, null, (err, row) => {
+                    if (err) {
+                        return res.status(500).json({ error: 'Check recorded but database error' });
+                    }
+                    res.json({ success: true, checkId: row.id });
+                });
+                return;
             }
-            createCheck(senderId, receiverId, amount, fee, 'completed', memo, null, (err, row) => {
-                if (err) {
-                    return res.status(500).json({ error: 'Check recorded but database error' });
-                }
-                res.json({ success: true, checkId: row.id });
-            });
-        });
-        return;
-    }
-    formbarApi.transferDigipogs(
-        socket,
-        senderId,
-        LENDER_USER_ID,
-        fee,
-        'Check fee',
-        pin
-    ).then((result1) => {
-        if (!result1.success) {
-            createCheck(senderId, receiverId, amount, fee, 'failed', memo, null, () => {});
-            return res.status(500).json({ error: result1.error || 'Fee transfer failed' });
-        }
-        setTimeout(() => {
             formbarApi.transferDigipogs(
                 socket,
                 senderId,
+                LENDER_USER_ID,
+                total,
+                depositMemo,
+                pin
+            ).then((result) => {
+                if (!result.success) {
+                    createCheck(senderId, null, amount, fee, 'failed', memo, null, () => {});
+                    return res.status(500).json({ error: result.error || 'Deposit to FormBank failed' });
+                }
+                // No sender PIN stored — FormBank holds funds until redeem
+                createCheck(senderId, null, amount, fee, 'uncashed', memo, null, (err, row) => {
+                    if (err) {
+                        return res.status(500).json({ error: 'Check recorded but database error' });
+                    }
+                    res.json({ success: true, checkId: row.id });
+                });
+            });
+            return;
+        }
+
+        // Specific receiver: sender → FormBank (amount+fee), then FormBank → receiver (amount)
+        function payoutToReceiver(checkStatusOnFail) {
+            formbarApi.transferDigipogs(
+                socket,
+                LENDER_USER_ID,
                 receiverId,
                 amount,
-                memo || `Check: ${amount} digipogs`,
-                pin
+                payoutMemo,
+                LENDER_PIN
             ).then((result2) => {
                 if (!result2.success) {
-                    createCheck(senderId, receiverId, amount, fee, 'failed', memo, null, () => {});
-                    return res.status(500).json({ error: result2.error || 'Transfer to receiver failed' });
+                    createCheck(senderId, receiverId, amount, fee, checkStatusOnFail, memo, null, () => {});
+                    return res.status(500).json({
+                        error: result2.error || 'FormBank payout to receiver failed'
+                    });
                 }
                 createCheck(senderId, receiverId, amount, fee, 'completed', memo, null, (err, row) => {
                     if (err) {
@@ -1018,9 +1179,64 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
                     res.json({ success: true, checkId: row.id });
                 });
             });
-        }, 6000);
-    });
+        }
+
+        if (isDefaultUser) {
+            payoutToReceiver('failed');
+            return;
+        }
+
+        formbarApi.transferDigipogs(
+            socket,
+            senderId,
+            LENDER_USER_ID,
+            total,
+            depositMemo,
+            pin
+        ).then((result1) => {
+            if (!result1.success) {
+                createCheck(senderId, receiverId, amount, fee, 'failed', memo, null, () => {});
+                return res.status(500).json({ error: result1.error || 'Deposit to FormBank failed' });
+            }
+            payoutToReceiver('failed');
+        });
+    }
 });
+
+/**
+ * Pay a blank/uncashed check to a receiver.
+ * New model: FormBank holds funds → payout with LENDER_PIN.
+ * Legacy (pin_for_redemption set): amount still with sender → use stored PIN.
+ */
+function redeemCheckToReceiver(check, receiverId) {
+    const checkId = check.id;
+    const memo = check.memo
+        ? `Check #${checkId}: ${check.memo}`
+        : `Check #${checkId} redemption`;
+
+    if (check.pin_for_redemption) {
+        return formbarApi.transferDigipogs(
+            socket,
+            check.sender_formbar_user_id,
+            receiverId,
+            check.amount,
+            memo,
+            check.pin_for_redemption
+        ).then((result) => {
+            clearCheckPin(checkId);
+            return result;
+        });
+    }
+
+    return formbarApi.transferDigipogs(
+        socket,
+        LENDER_USER_ID,
+        receiverId,
+        check.amount,
+        memo,
+        LENDER_PIN
+    );
+}
 
 // Socket.io client to auth server
 const socket = io(AUTH_URL, {

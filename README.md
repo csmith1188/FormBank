@@ -5,19 +5,20 @@
 ## Features
 
 ### Credit & Loans
-- **Loan system**: Borrow digipogs with a fixed 20% interest per loan
-- **Credit limits**: Start at 250 digipogs; limit increases by +250 each time your total repayments reach your current credit limit
+- **Credit score**: FICO-style 300–850 score from payment history, utilization, credit age, and repayment volume (new borrowers start at 580 / Fair)
+- **Score-based terms**: Higher score → higher credit limit, lower interest, smaller check fees
+- **Loan system**: Interest is set from your score when you borrow (about 8%–30%)
 - **Credit balance**: Overpayments are credited for future repayments
 - **One active loan** per user at a time
 - **Tax-aware**: Handles Formbar’s 10% transfer tax correctly
 
 ### Checks
 - **Write checks** to a specific user (Formbar user ID) or leave receiver blank
-- **Fee**: 5% of the amount or 5 digipogs, whichever is greater (charged when the check is written; skipped if the writer is the default/lender user)
-- **Specific receiver**: Fee is sent first, then after 6 seconds the amount is transferred to the receiver
-- **Blank check**: Only the fee is charged at write time; the amount is transferred when someone redeems by visiting the check status page (logged in or with `?receiverId=`). Sender’s PIN is stored for that one-time redemption
+- **Flow**: Sender pays **amount + fee** to FormBank in one transfer; on success FormBank pays the receiver the check amount
+- **Fee**: Driven by credit score (about 1.5%–8% with a score-based minimum; skipped if the writer is the default/lender user)
+- **Blank check**: Amount + fee are deposited to FormBank at write time; FormBank pays the amount when someone redeems via the check status page (logged in or with `?receiverId=`)
 - **Check status page**: Sender and receiver can view check details and a QR code for the status URL. Only they (and redeemer for blank checks) can access the page
-- **Default user**: If the user writing the check is the lender (default user in `.env`), no fee transaction is made; the check is created (and transfer runs for a specific receiver)
+- **Default user**: If the user writing the check is the lender (default user in `.env`), the deposit step is skipped and FormBank pays the receiver directly
 
 ## Setup
 
@@ -70,21 +71,24 @@ The app is available at `http://localhost:3000` (or your configured `PORT`).
 ## How it works
 
 ### Credit & loans (summary)
-- Borrow **P** digipogs → receive **0.9×P** (after 10% tax), owe **P×1.2**
+- Credit score (300–850) is computed from loan history; see `creditScore.js`
+- Score sets **limit**, **interest**, and **check fees**
+- Borrow **P** digipogs → receive **0.9×P** (after 10% tax), owe **P×(1 + rate)**
 - Repayments reduce the balance; overpayments go to credit balance
-- One active loan per user; every time your total repayments reach your current credit limit, that limit increases by 250
+- One active loan per user; paying loans and building history raises your score and terms
 
 ### Checks
-- **With receiver ID**: Fee (sender → lender) is run first; after 6 seconds, amount is transferred sender → receiver. Check is recorded as completed or failed.
-- **No receiver (blank)**: Only the fee is charged at write time. When the check status page is opened by a logged-in user (first viewer) or with `?receiverId=...`, that user is set as receiver and the amount is transferred sender → receiver using the stored PIN; then the PIN is cleared.
-- **Default user**: When the writer’s user ID equals `LENDER_USER_ID`, the fee step is skipped and the check is created (and, for a specific receiver, the transfer runs without the 6-second delay).
+- **With receiver ID**: Sender → FormBank for amount+fee, then FormBank → receiver for amount. Check is recorded as completed or failed.
+- **No receiver (blank)**: Sender → FormBank for amount+fee at write time. On redeem, FormBank → receiver for amount.
+- **Default user**: When the writer’s user ID equals `LENDER_USER_ID`, the deposit step is skipped and FormBank pays the receiver directly.
+- **Legacy blank checks** (written under the old fee-only model with a stored sender PIN) still redeem sender → receiver using that PIN.
 
 ## Main routes
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/` | Home (requires login) |
-| GET | `/credit` | Credit dashboard: limit, balance, active loan, history |
+| GET | `/credit` | Credit dashboard: score, limit, rate, balance, active loan, history |
 | POST | `/credit/borrow` | Request a loan (`amount`) |
 | POST | `/credit/repay` | Repay (`amount`, `pin`) |
 | POST | `/credit/repay/full` | Pay full remaining balance (`pin`) |
@@ -94,11 +98,11 @@ The app is available at `http://localhost:3000` (or your configured `PORT`).
 
 ## Database schema (main tables)
 
-- **credit_loans** – Loan records (borrower, principal, amount_owed, amount_paid, status, etc.)
-- **credit_limits** – Per-user borrowing limit and paid-off count
+- **credit_loans** – Loan records (borrower, principal, interest_rate, amount_owed, amount_paid, status, etc.)
+- **credit_limits** – Per-user borrowing limit, paid-loan count, and cached credit_score
 - **credit_balances** – Overpayment credit per user
 - **checks** – Check records: sender, receiver (nullable), amount, fee_charged, status (`completed` / `failed` / `uncashed`), memo, `pin_for_redemption` (used once for blank-check redemption, then cleared)
-- **users** – Usernames (from login)
+- **users** – Usernames and Formbar IDs (from login / API cache)
 
 ## Tech stack
 - **Backend**: Node.js, Express
