@@ -121,11 +121,6 @@
                 You pay <strong>amount + fee</strong> to FormBank in one transfer; FormBank then pays the receiver the check amount.
                 Leave receiver blank to create a check that anyone can redeem by opening the check status page first (FormBank holds the funds until then).
             </div>
-            <% if (typeof isFormbankAccount !== 'undefined' && isFormbankAccount) { %>
-            <div class="alert-info" style="background:#fefcbf;color:#744210;border-left:4px solid #d69e2e;margin-top:12px;">
-                You are logged in as the FormBank lender account. Formbar cannot charge amount+fee to the same account that pays the receiver, so only the payout of the check amount will run. Write checks from a different user account to test fees.
-            </div>
-            <% } %>
             <form id="writeCheckForm" onsubmit="return submitWriteCheck(event)">
                 <div class="form-group">
                     <label for="receiverId">Receiver Formbar user ID (optional)</label>
@@ -260,11 +255,8 @@
                 });
                 var data = await response.json();
                 if (data.success) {
-                    var feeNote = (data.fee != null)
-                        ? (' Charged ' + data.totalCharged + ' digipogs (amount ' + data.amount + ' + fee ' + data.fee + ').')
-                        : '';
                     showStatus('Check created. Redirecting...');
-                    showMessage('writeCheckMessage', 'Check sent successfully. Check ID: ' + data.checkId + '.' + feeNote, 'success');
+                    showMessage('writeCheckMessage', 'Check sent successfully. Check ID: ' + data.checkId, 'success');
                     setTimeout(function() { window.location.href = '/checks/' + data.checkId; }, 1500);
                 } else {
                     formSubmitting = false;

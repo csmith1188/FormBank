@@ -10,19 +10,12 @@ CREATE TABLE credit_loans (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     borrower_formbar_user_id INTEGER NOT NULL,
     principal INTEGER NOT NULL,
-    interest_rate REAL DEFAULT 0.12,
+    interest_rate REAL DEFAULT 0.20,
     amount_owed INTEGER NOT NULL,
     amount_paid INTEGER DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'active',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    paid_at DATETIME,
-    last_compounded_at DATETIME,
-    next_due_at DATETIME,
-    min_payment_due INTEGER DEFAULT 0,
-    period_paid INTEGER DEFAULT 0,
-    on_time_streak INTEGER DEFAULT 0,
-    missed_payments INTEGER DEFAULT 0,
-    last_payment_at DATETIME
+    paid_at DATETIME
 );
 
 CREATE TABLE credit_limits (
