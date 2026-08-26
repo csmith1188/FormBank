@@ -108,9 +108,9 @@ const LENDER_PIN = parseInt(process.env.LENDER_PIN) || 3639; // PIN must be a nu
 const FORMBAR_URL = (process.env.FORMBAR_URL || process.env.AUTH_URL || 'https://formbar.yorktechapps.com')
     .replace(/\/oauth\/?$/, '')
     .replace(/\/$/, '') || 'https://formbar.yorktechapps.com';
-/** When true, compound interest runs every 30 minutes (each tick = one simulated day). */
+/** When true, compound interest runs on COMPOUND_TEST_INTERVAL_MS (each tick = one simulated day). */
 const COMPOUND_TEST = ['1', 'true', 'yes', 'on'].includes(String(process.env.COMPOUND_TEST || '').toLowerCase());
-const COMPOUND_TEST_INTERVAL_MS = 60 * 1000;
+const COMPOUND_TEST_INTERVAL_MS = creditScore.COMPOUND_TEST_PERIOD_MS;
 
 // Middleware
 app.set('view engine', 'ejs');
@@ -449,7 +449,9 @@ function runCompoundInterest(done) {
                 return finish(err);
             }
             const list = loans || [];
-            const dailyRateNote = COMPOUND_TEST ? ' (test: 30-min tick = 1 day)' : ' (daily)';
+            const dailyRateNote = COMPOUND_TEST
+                ? ` (test: ${COMPOUND_TEST_INTERVAL_MS / 1000}s tick = 1 day)`
+                : ' (daily)';
 
             if (list.length === 0) {
                 console.log('[compound] No active loans to compound — checking dues / scores');
@@ -511,7 +513,7 @@ function msUntilNextMidnight() {
 
 function startCompoundScheduler() {
     if (COMPOUND_TEST) {
-        console.log(`[compound] COMPOUND_TEST enabled — compounding every ${COMPOUND_TEST_INTERVAL_MS / 60000} minutes (each tick = 1 day of interest)`);
+        console.log(`[compound] COMPOUND_TEST enabled — compounding every ${COMPOUND_TEST_INTERVAL_MS / 1000}s (each tick = 1 day of interest)`);
         setInterval(() => runCompoundInterest(), COMPOUND_TEST_INTERVAL_MS);
         // First run shortly after boot so tests don't wait a full interval
         setTimeout(() => runCompoundInterest(), 5000);
@@ -846,6 +848,7 @@ app.get('/credit', isAuthenticated, (req, res) => {
                                 interestRate: terms.interestRate,
                                 originationFeeRate: creditScore.ORIGINATION_FEE_RATE,
                                 compoundTest: COMPOUND_TEST,
+                                compoundTestIntervalSec: Math.round(COMPOUND_TEST_INTERVAL_MS / 1000),
                                 checkFeeRate: terms.checkFeeRate,
                                 checkFeeMin: terms.checkFeeMin,
                                 creditBalance: balanceData.credit_balance,
@@ -928,7 +931,7 @@ app.post('/credit/borrow', isAuthenticated, async (req, res) => {
                     refreshCreditProfile(userId, () => {});
                     const aprPct = (loan.interestRate * 100).toFixed(2);
                     const fee = loan.originationFee;
-                    const dueLabel = COMPOUND_TEST ? 'every 30 minutes' : 'every 7 days';
+                    const dueLabel = COMPOUND_TEST ? 'every minute' : 'every 7 days';
                     res.json({
                         success: true,
                         message: `Loan of ${principal} digipogs issued (score ${terms.score}). ` +

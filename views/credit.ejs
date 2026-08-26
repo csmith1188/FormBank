@@ -272,7 +272,7 @@
             <div class="stat-card">
                 <h3>Your APR</h3>
                 <div class="value"><%= interestPct %>%</div>
-                <div class="sub">Compounds <%= typeof compoundTest !== 'undefined' && compoundTest ? 'every 30 min (test)' : 'nightly' %></div>
+                <div class="sub">Compounds <%= typeof compoundTest !== 'undefined' && compoundTest ? ('every ' + (typeof compoundTestIntervalSec !== 'undefined' ? compoundTestIntervalSec + 's' : 'minute') + ' (test)') : 'nightly' %></div>
             </div>
             <div class="stat-card">
                 <h3>Credit Balance</h3>
@@ -293,7 +293,7 @@
             <div class="loan-details">
                 <p><strong>Principal:</strong> <%= activeLoan.principal %> digipogs</p>
                 <p><strong>Origination fee:</strong> 10% (included in balance at issue)</p>
-                <p><strong>APR:</strong> <%= (activeLoan.interest_rate * 100).toFixed(2) %>% (compounds <%= typeof compoundTest !== 'undefined' && compoundTest ? 'every 30 minutes while COMPOUND_TEST is on' : 'every night at midnight' %>)</p>
+                <p><strong>APR:</strong> <%= (activeLoan.interest_rate * 100).toFixed(2) %>% (compounds <%= typeof compoundTest !== 'undefined' && compoundTest ? ('every ' + (typeof compoundTestIntervalSec !== 'undefined' ? compoundTestIntervalSec + ' seconds' : 'minute') + ' while COMPOUND_TEST is on') : 'every night at midnight' %>)</p>
                 <p><strong>Total Owed:</strong> <%= activeLoan.amount_owed %> digipogs</p>
                 <p><strong>Amount Paid:</strong> <%= activeLoan.amount_paid %> digipogs</p>
                 <p><strong>Remaining:</strong> <strong style="color: #e53e3e;"><%= activeLoan.amount_owed - activeLoan.amount_paid %> digipogs</strong></p>
@@ -352,13 +352,13 @@
             <div class="alert alert-info">
                 <strong>Loan Terms:</strong> Borrowing adds a <strong>one-time 10% fee</strong> to what you owe, then interest compounds on your remaining balance
                 <% if (typeof compoundTest !== 'undefined' && compoundTest) { %>
-                <strong>every 30 minutes</strong> (COMPOUND_TEST)
+                <strong>every <%= typeof compoundTestIntervalSec !== 'undefined' ? compoundTestIntervalSec + ' seconds' : 'minute' %></strong> (COMPOUND_TEST)
                 <% } else { %>
                 <strong>every night at midnight</strong>
                 <% } %>
                 at <strong><%= interestPct %>% APR</strong> (score <%= creditScore %> · <%= creditScoreLabel %>).
                 Borrow up to <strong><%= creditLimit %></strong> digipogs. When you borrow P, you receive 0.9×P after Formbar tax and start owing 1.10×P.
-                Minimum payments (10% of remaining, at least 25) are due <%= typeof compoundTest !== 'undefined' && compoundTest ? 'every 30 minutes in test mode' : 'every 7 days' %>.
+                Minimum payments (10% of remaining, at least 25) are due <%= typeof compoundTest !== 'undefined' && compoundTest ? ('every ' + (typeof compoundTestIntervalSec !== 'undefined' ? compoundTestIntervalSec + ' seconds' : 'minute') + ' in test mode') : 'every 7 days' %>.
                 One active loan at a time. Check fees are currently <%= feePct %>% (min <%= checkFeeMin %> digipogs).
             </div>
             <form id="borrowForm" onsubmit="return submitBorrow(event)">
@@ -380,7 +380,7 @@
                 <strong>fully</strong> and <strong>quickly</strong>, then repeat. Early on, good and bad habits move your score a lot;
                 near the top, the same habits only nudge it — so high scores and large credit lines take time.
                 Scores refresh whenever interest compounds
-                (<%= typeof compoundTest !== 'undefined' && compoundTest ? 'every 30 minutes in test mode' : 'every night at midnight' %>).
+                (<%= typeof compoundTest !== 'undefined' && compoundTest ? ('every ' + (typeof compoundTestIntervalSec !== 'undefined' ? compoundTestIntervalSec + ' seconds' : 'minute') + ' in test mode') : 'every night at midnight' %>).
             </p>
             <ul style="color:#555; line-height:1.7; margin-left:20px; margin-bottom:14px;">
                 <li><strong>Mobility:</strong> bigger score swings at low scores; small swings once you’re near Exceptional</li>
