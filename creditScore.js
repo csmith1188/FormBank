@@ -15,8 +15,8 @@
 
 const SCORE_MIN = 300;
 const SCORE_MAX = 850;
-/** Thin-file / new borrower starting score (minimum / Poor). */
-const BASE_SCORE = SCORE_MIN;
+/** Thin-file / new borrower starting score (Fair). */
+const BASE_SCORE = 580;
 /** One-time origination fee on principal when a loan is issued. */
 const ORIGINATION_FEE_RATE = 0.10;
 /** Minimum payment = this fraction of remaining balance (floored by MIN_PAYMENT_FLOOR). */

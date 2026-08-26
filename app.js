@@ -59,13 +59,13 @@ const db = new sqlite3.Database('./db/database.db', (err) => {
         );
         // Ensure credit_limits has credit_score column
         db.run(
-            'CREATE TABLE IF NOT EXISTS credit_limits (borrower_formbar_user_id INTEGER PRIMARY KEY, current_limit INTEGER DEFAULT 250, paid_off_count INTEGER DEFAULT 0, credit_score INTEGER DEFAULT 300)',
+            'CREATE TABLE IF NOT EXISTS credit_limits (borrower_formbar_user_id INTEGER PRIMARY KEY, current_limit INTEGER DEFAULT 250, paid_off_count INTEGER DEFAULT 0, credit_score INTEGER DEFAULT 580)',
             (err) => {
                 if (err) return console.error('Error ensuring credit_limits table:', err);
                 db.all('PRAGMA table_info(credit_limits)', (err, cols) => {
                     if (err || !cols) return;
                     if (!cols.some(c => c.name === 'credit_score')) {
-                        db.run('ALTER TABLE credit_limits ADD COLUMN credit_score INTEGER DEFAULT 300', () => {});
+                        db.run('ALTER TABLE credit_limits ADD COLUMN credit_score INTEGER DEFAULT 580', () => {});
                     }
                 });
             }

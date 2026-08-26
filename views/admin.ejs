@@ -130,7 +130,7 @@
                     <% let totalBalance = 0; %>
                     <% users.forEach(u => { %>
                     <% totalBalance += (u.credit_balance || 0); %>
-                    <% const label = typeof scoreLabel === 'function' ? scoreLabel(u.credit_score != null ? u.credit_score : 300) : ''; %>
+                    <% const label = typeof scoreLabel === 'function' ? scoreLabel(u.credit_score || 580) : ''; %>
                     <tr>
                         <td><%- formbarUserLink(u.user_id, userNames) %></td>
                         <td><%= u.credit_score != null ? u.credit_score : '—' %><% if (label) { %> <span style="color:#888;">(<%= label %>)</span><% } %></td>
