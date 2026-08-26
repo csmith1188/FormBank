@@ -5,7 +5,7 @@
 ## Features
 
 ### Credit & Loans
-- **Credit score**: FICO-style 300–850 score from payment history, utilization, credit age, and repayment volume (new borrowers start at 580 / Fair)
+- **Credit score**: FICO-style 300–850 score from payment history, utilization, credit age, and repayment volume (new borrowers start at 300 / Poor)
 - **Score-based terms**: Higher score → higher credit limit, lower interest, smaller check fees
 - **Loan system**: One-time 10% origination fee, then score-based APR (about 4%–24%) that compounds on the remaining balance every night at midnight
 - **Minimum payments / due dates**: 10% of remaining (min 25) due every 7 days; on-time streaks boost score, missed payments penalize harder than unpaid balance

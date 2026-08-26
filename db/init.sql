@@ -29,7 +29,7 @@ CREATE TABLE credit_limits (
     borrower_formbar_user_id INTEGER PRIMARY KEY,
     current_limit INTEGER DEFAULT 250,
     paid_off_count INTEGER DEFAULT 0,
-    credit_score INTEGER DEFAULT 580
+    credit_score INTEGER DEFAULT 300
 );
 
 CREATE TABLE credit_balances (
