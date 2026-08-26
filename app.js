@@ -70,6 +70,29 @@ const db = new sqlite3.Database('./db/database.db', (err) => {
                 });
             }
         );
+        // Ensure credit_loans has compounding + payment-schedule columns
+        db.run(
+            'CREATE TABLE IF NOT EXISTS credit_loans (id INTEGER PRIMARY KEY AUTOINCREMENT, borrower_formbar_user_id INTEGER NOT NULL, principal INTEGER NOT NULL, interest_rate REAL DEFAULT 0.12, amount_owed INTEGER NOT NULL, amount_paid INTEGER DEFAULT 0, status TEXT NOT NULL DEFAULT \'active\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, paid_at DATETIME, last_compounded_at DATETIME, next_due_at DATETIME, min_payment_due INTEGER DEFAULT 0, period_paid INTEGER DEFAULT 0, on_time_streak INTEGER DEFAULT 0, missed_payments INTEGER DEFAULT 0, last_payment_at DATETIME)',
+            (err) => {
+                if (err) return console.error('Error ensuring credit_loans table:', err);
+                db.all('PRAGMA table_info(credit_loans)', (err, cols) => {
+                    if (err || !cols) return;
+                    const names = cols.map(c => c.name);
+                    const addCol = (name, ddl) => {
+                        if (!names.includes(name)) {
+                            db.run(`ALTER TABLE credit_loans ADD COLUMN ${ddl}`, () => {});
+                        }
+                    };
+                    addCol('last_compounded_at', 'last_compounded_at DATETIME');
+                    addCol('next_due_at', 'next_due_at DATETIME');
+                    addCol('min_payment_due', 'min_payment_due INTEGER DEFAULT 0');
+                    addCol('period_paid', 'period_paid INTEGER DEFAULT 0');
+                    addCol('on_time_streak', 'on_time_streak INTEGER DEFAULT 0');
+                    addCol('missed_payments', 'missed_payments INTEGER DEFAULT 0');
+                    addCol('last_payment_at', 'last_payment_at DATETIME');
+                });
+            }
+        );
     }
 });
 
@@ -85,6 +108,9 @@ const LENDER_PIN = parseInt(process.env.LENDER_PIN) || 3639; // PIN must be a nu
 const FORMBAR_URL = (process.env.FORMBAR_URL || process.env.AUTH_URL || 'https://formbar.yorktechapps.com')
     .replace(/\/oauth\/?$/, '')
     .replace(/\/$/, '') || 'https://formbar.yorktechapps.com';
+/** When true, compound interest runs every 30 minutes (each tick = one simulated day). */
+const COMPOUND_TEST = ['1', 'true', 'yes', 'on'].includes(String(process.env.COMPOUND_TEST || '').toLowerCase());
+const COMPOUND_TEST_INTERVAL_MS = 30 * 60 * 1000;
 
 // Middleware
 app.set('view engine', 'ejs');
@@ -162,7 +188,34 @@ function getCreditBalance(userId, callback) {
 }
 
 function getActiveLoan(userId, callback) {
-    db.get('SELECT * FROM credit_loans WHERE borrower_formbar_user_id = ? AND status = ?', [userId, 'active'], callback);
+    db.get('SELECT * FROM credit_loans WHERE borrower_formbar_user_id = ? AND status = ?', [userId, 'active'], (err, loan) => {
+        if (err || !loan) return callback(err, loan);
+        ensureLoanPaymentSchedule(loan, callback);
+    });
+}
+
+/** Backfill due-date fields for loans created before payment schedules existed. */
+function ensureLoanPaymentSchedule(loan, callback) {
+    if (!loan) return callback(null, loan);
+    if (loan.next_due_at != null && loan.min_payment_due != null) {
+        return callback(null, loan);
+    }
+    const remaining = creditScore.loanRemaining(loan);
+    const minDue = creditScore.calcMinPayment(remaining);
+    const nextDue = loan.next_due_at || creditScore.nextDueAtFrom(new Date().toISOString(), COMPOUND_TEST);
+    db.run(
+        'UPDATE credit_loans SET next_due_at = COALESCE(next_due_at, ?), min_payment_due = COALESCE(min_payment_due, ?), period_paid = COALESCE(period_paid, 0), on_time_streak = COALESCE(on_time_streak, 0), missed_payments = COALESCE(missed_payments, 0) WHERE id = ?',
+        [nextDue, minDue, loan.id],
+        (err) => {
+            if (err) return callback(err, loan);
+            loan.next_due_at = loan.next_due_at || nextDue;
+            loan.min_payment_due = loan.min_payment_due != null ? loan.min_payment_due : minDue;
+            loan.period_paid = loan.period_paid || 0;
+            loan.on_time_streak = loan.on_time_streak || 0;
+            loan.missed_payments = loan.missed_payments || 0;
+            callback(null, loan);
+        }
+    );
 }
 
 function getLoanHistory(userId, callback) {
@@ -176,18 +229,55 @@ function refreshCreditProfile(userId, callback) {
     getLoanHistory(userId, (err, loans) => {
         if (err) return callback(err, null);
         const list = loans || [];
-        const terms = creditScore.getCreditTerms(list);
-        const paidCount = list.filter((l) => l.status === 'paid').length;
-        db.run(
-            'INSERT INTO credit_limits (borrower_formbar_user_id, current_limit, paid_off_count, credit_score) VALUES (?, ?, ?, ?) ' +
-            'ON CONFLICT(borrower_formbar_user_id) DO UPDATE SET current_limit = excluded.current_limit, paid_off_count = excluded.paid_off_count, credit_score = excluded.credit_score',
-            [userId, terms.creditLimit, paidCount, terms.score],
-            (err2) => {
-                if (err2) return callback(err2, null);
-                callback(null, terms);
+        db.get(
+            'SELECT current_limit FROM credit_limits WHERE borrower_formbar_user_id = ?',
+            [userId],
+            (limErr, limRow) => {
+                const priorLimit = limRow && limRow.current_limit != null ? limRow.current_limit : undefined;
+                const terms = creditScore.getCreditTerms(list, priorLimit);
+                const paidCount = list.filter((l) => l.status === 'paid').length;
+                db.run(
+                    'INSERT INTO credit_limits (borrower_formbar_user_id, current_limit, paid_off_count, credit_score) VALUES (?, ?, ?, ?) ' +
+                    'ON CONFLICT(borrower_formbar_user_id) DO UPDATE SET current_limit = excluded.current_limit, paid_off_count = excluded.paid_off_count, credit_score = excluded.credit_score',
+                    [userId, terms.creditLimit, paidCount, terms.score],
+                    (err2) => {
+                        if (err2) return callback(err2, null);
+                        callback(null, terms);
+                    }
+                );
             }
         );
     });
+}
+
+/** Refresh credit scores for every known borrower (used after compound ticks). */
+function refreshAllCreditProfiles(done) {
+    const finish = typeof done === 'function' ? done : () => {};
+    db.all(
+        'SELECT borrower_formbar_user_id AS user_id FROM credit_limits ' +
+        'UNION SELECT DISTINCT borrower_formbar_user_id AS user_id FROM credit_loans',
+        [],
+        (err, rows) => {
+            if (err) {
+                console.error('[compound] Failed to list users for score refresh:', err);
+                return finish(err);
+            }
+            const users = rows || [];
+            if (users.length === 0) return finish(null, { refreshed: 0 });
+            let pending = users.length;
+            let refreshed = 0;
+            users.forEach((u) => {
+                refreshCreditProfile(u.user_id, (refErr, terms) => {
+                    if (!refErr && terms) {
+                        refreshed += 1;
+                        console.log(`[compound] Score refresh user ${u.user_id}: ${terms.score} (${terms.scoreLabel}), limit ${terms.creditLimit}`);
+                    }
+                    pending -= 1;
+                    if (pending === 0) finish(null, { refreshed });
+                });
+            });
+        }
+    );
 }
 
 /** Top N credit scores (recomputed from loan history). */
@@ -206,28 +296,34 @@ function getTopCreditScores(limit, callback) {
             const results = [];
             list.forEach((u) => {
                 getLoanHistory(u.user_id, (histErr, loans) => {
-                    const terms = creditScore.getCreditTerms(histErr ? [] : (loans || []));
-                    results.push({
-                        user_id: u.user_id,
-                        credit_score: terms.score,
-                        score_label: terms.scoreLabel,
-                        current_limit: terms.creditLimit
-                    });
-                    // Keep cached score in sync for admin / other views
-                    db.run(
-                        'INSERT INTO credit_limits (borrower_formbar_user_id, current_limit, paid_off_count, credit_score) VALUES (?, ?, ?, ?) ' +
-                        'ON CONFLICT(borrower_formbar_user_id) DO UPDATE SET current_limit = excluded.current_limit, credit_score = excluded.credit_score',
-                        [u.user_id, terms.creditLimit, (loans || []).filter((l) => l.status === 'paid').length, terms.score],
-                        () => {}
+                    db.get(
+                        'SELECT current_limit FROM credit_limits WHERE borrower_formbar_user_id = ?',
+                        [u.user_id],
+                        (limErr, limRow) => {
+                            const priorLimit = limRow && limRow.current_limit != null ? limRow.current_limit : undefined;
+                            const terms = creditScore.getCreditTerms(histErr ? [] : (loans || []), priorLimit);
+                            results.push({
+                                user_id: u.user_id,
+                                credit_score: terms.score,
+                                score_label: terms.scoreLabel,
+                                current_limit: terms.creditLimit
+                            });
+                            db.run(
+                                'INSERT INTO credit_limits (borrower_formbar_user_id, current_limit, paid_off_count, credit_score) VALUES (?, ?, ?, ?) ' +
+                                'ON CONFLICT(borrower_formbar_user_id) DO UPDATE SET current_limit = excluded.current_limit, credit_score = excluded.credit_score',
+                                [u.user_id, terms.creditLimit, (loans || []).filter((l) => l.status === 'paid').length, terms.score],
+                                () => {}
+                            );
+                            pending -= 1;
+                            if (pending === 0) {
+                                results.sort((a, b) => {
+                                    if (b.credit_score !== a.credit_score) return b.credit_score - a.credit_score;
+                                    return b.current_limit - a.current_limit;
+                                });
+                                callback(null, results.slice(0, n));
+                            }
+                        }
                     );
-                    pending -= 1;
-                    if (pending === 0) {
-                        results.sort((a, b) => {
-                            if (b.credit_score !== a.credit_score) return b.credit_score - a.credit_score;
-                            return b.current_limit - a.current_limit;
-                        });
-                        callback(null, results.slice(0, n));
-                    }
                 });
             });
         }
@@ -236,35 +332,245 @@ function getTopCreditScores(limit, callback) {
 
 function createLoan(userId, principal, interestRate, callback) {
     const rate = typeof interestRate === 'number' ? interestRate : creditScore.interestRateFromScore(creditScore.BASE_SCORE);
-    const amountOwed = Math.ceil(principal * (1 + rate));
+    // One-time 10% origination fee; compounding APR is stored separately in interest_rate
+    const amountOwed = creditScore.amountOwedAfterOriginationFee(principal);
+    const nowIso = new Date().toISOString();
+    const minPaymentDue = creditScore.calcMinPayment(amountOwed);
+    const nextDueAt = creditScore.nextDueAtFrom(nowIso, COMPOUND_TEST);
     db.run(
-        'INSERT INTO credit_loans (borrower_formbar_user_id, principal, interest_rate, amount_owed, amount_paid, status) VALUES (?, ?, ?, ?, 0, ?)',
-        [userId, principal, rate, amountOwed, 'active'],
+        'INSERT INTO credit_loans (borrower_formbar_user_id, principal, interest_rate, amount_owed, amount_paid, status, last_compounded_at, next_due_at, min_payment_due, period_paid, on_time_streak, missed_payments) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, 0)',
+        [userId, principal, rate, amountOwed, 'active', nowIso, nextDueAt, minPaymentDue],
         function(err) {
             if (err) return callback(err, null);
-            callback(null, { id: this.lastID, principal, amountOwed, interestRate: rate });
+            callback(null, {
+                id: this.lastID,
+                principal,
+                amountOwed,
+                interestRate: rate,
+                originationFee: amountOwed - principal,
+                nextDueAt,
+                minPaymentDue
+            });
         }
     );
 }
 
+/**
+ * Evaluate due dates on active loans: meet minimum → streak++; miss → streak=0, missed++.
+ * Rolls the next due date and recalculates the minimum from the remaining balance.
+ */
+function evaluateLoanDueDates(done) {
+    const finish = typeof done === 'function' ? done : () => {};
+    const now = Date.now();
+    const nowIso = new Date(now).toISOString();
+    db.all(
+        "SELECT * FROM credit_loans WHERE status = 'active' AND next_due_at IS NOT NULL",
+        [],
+        (err, loans) => {
+            if (err) {
+                console.error('[due] Failed to load loans:', err);
+                return finish(err);
+            }
+            const dueLoans = (loans || []).filter((loan) => {
+                const due = new Date(loan.next_due_at).getTime();
+                return !isNaN(due) && now >= due;
+            });
+            if (dueLoans.length === 0) {
+                return finish(null, { evaluated: 0, missed: 0, onTime: 0 });
+            }
+
+            let pending = dueLoans.length;
+            let missed = 0;
+            let onTime = 0;
+            dueLoans.forEach((loan) => {
+                const remaining = creditScore.loanRemaining(loan);
+                const periodPaid = Number(loan.period_paid) || 0;
+                const minDue = Number(loan.min_payment_due) || 0;
+                const metMinimum = minDue <= 0 || periodPaid >= minDue || remaining <= 0;
+                let streak = Number(loan.on_time_streak) || 0;
+                let misses = Number(loan.missed_payments) || 0;
+                if (metMinimum) {
+                    streak += 1;
+                    onTime += 1;
+                    console.log(`[due] Loan #${loan.id}: on-time (paid ${periodPaid}/${minDue}), streak=${streak}`);
+                } else {
+                    streak = 0;
+                    misses += 1;
+                    missed += 1;
+                    console.log(`[due] Loan #${loan.id}: MISSED minimum (paid ${periodPaid}/${minDue}), misses=${misses}`);
+                }
+                const newMin = creditScore.calcMinPayment(remaining);
+                const newDue = creditScore.nextDueAtFrom(nowIso, COMPOUND_TEST);
+                db.run(
+                    'UPDATE credit_loans SET on_time_streak = ?, missed_payments = ?, period_paid = 0, min_payment_due = ?, next_due_at = ? WHERE id = ? AND status = ?',
+                    [streak, misses, newMin, newDue, loan.id, 'active'],
+                    (updErr) => {
+                        if (updErr) console.error(`[due] Loan #${loan.id} update failed:`, updErr);
+                        pending -= 1;
+                        if (pending === 0) finish(null, { evaluated: dueLoans.length, missed, onTime });
+                    }
+                );
+            });
+        }
+    );
+}
+
+/**
+ * Apply one compounding period to all active loans (daily rate; in COMPOUND_TEST each tick = one day).
+ * Also evaluates minimum-payment due dates, then recalculates every borrower's credit score.
+ */
+function runCompoundInterest(done) {
+    const finish = typeof done === 'function' ? done : () => {};
+
+    const afterInterest = (compounded) => {
+        evaluateLoanDueDates((dueErr, dueResult) => {
+            if (dueErr) console.error('[compound] Due-date evaluation error:', dueErr);
+            if (dueResult) {
+                console.log(`[due] Evaluated ${dueResult.evaluated} (on-time ${dueResult.onTime}, missed ${dueResult.missed})`);
+            }
+            refreshAllCreditProfiles((refErr, refResult) => {
+                if (refErr) console.error('[compound] Score refresh error:', refErr);
+                console.log(`[compound] Scores refreshed: ${refResult ? refResult.refreshed : 0}`);
+                finish(null, {
+                    compounded: compounded || 0,
+                    dueEvaluated: dueResult ? dueResult.evaluated : 0,
+                    scoresRefreshed: refResult ? refResult.refreshed : 0
+                });
+            });
+        });
+    };
+
+    db.all(
+        "SELECT id, borrower_formbar_user_id, amount_owed, amount_paid, interest_rate FROM credit_loans WHERE status = 'active'",
+        [],
+        (err, loans) => {
+            if (err) {
+                console.error('[compound] Failed to load active loans:', err);
+                return finish(err);
+            }
+            const list = loans || [];
+            const dailyRateNote = COMPOUND_TEST ? ' (test: 30-min tick = 1 day)' : ' (daily)';
+
+            if (list.length === 0) {
+                console.log('[compound] No active loans to compound — checking dues / scores');
+                return afterInterest(0);
+            }
+
+            let pending = list.length;
+            let updated = 0;
+            const nowIso = new Date().toISOString();
+
+            list.forEach((loan) => {
+                const remaining = Math.max(0, (loan.amount_owed || 0) - (loan.amount_paid || 0));
+                const touchDone = () => {
+                    pending -= 1;
+                    if (pending === 0) {
+                        console.log(`[compound] Balance updates${dailyRateNote}: ${updated}/${list.length}`);
+                        afterInterest(updated);
+                    }
+                };
+
+                if (remaining <= 0) {
+                    return touchDone();
+                }
+                const periodRate = creditScore.periodRateFromAnnual(loan.interest_rate, 365);
+                const interest = Math.round(remaining * periodRate);
+                if (interest <= 0) {
+                    db.run(
+                        'UPDATE credit_loans SET last_compounded_at = ? WHERE id = ?',
+                        [nowIso, loan.id],
+                        () => touchDone()
+                    );
+                    return;
+                }
+                const newOwed = loan.amount_owed + interest;
+                db.run(
+                    'UPDATE credit_loans SET amount_owed = ?, last_compounded_at = ? WHERE id = ? AND status = ?',
+                    [newOwed, nowIso, loan.id, 'active'],
+                    function(updateErr) {
+                        if (updateErr) {
+                            console.error(`[compound] Loan #${loan.id} failed:`, updateErr);
+                        } else if (this.changes > 0) {
+                            updated += 1;
+                            console.log(`[compound] Loan #${loan.id}: +${interest} digipogs (remaining was ${remaining}, now owed ${newOwed})`);
+                        }
+                        touchDone();
+                    }
+                );
+            });
+        }
+    );
+}
+
+function msUntilNextMidnight() {
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(24, 0, 0, 0);
+    return Math.max(1000, next.getTime() - now.getTime());
+}
+
+function startCompoundScheduler() {
+    if (COMPOUND_TEST) {
+        console.log(`[compound] COMPOUND_TEST enabled — compounding every ${COMPOUND_TEST_INTERVAL_MS / 60000} minutes (each tick = 1 day of interest)`);
+        setInterval(() => runCompoundInterest(), COMPOUND_TEST_INTERVAL_MS);
+        // First run shortly after boot so tests don't wait a full interval
+        setTimeout(() => runCompoundInterest(), 5000);
+        return;
+    }
+
+    const scheduleMidnight = () => {
+        const wait = msUntilNextMidnight();
+        console.log(`[compound] Next midnight compound in ${Math.round(wait / 60000)} minutes`);
+        setTimeout(() => {
+            runCompoundInterest(() => scheduleMidnight());
+        }, wait);
+    };
+    scheduleMidnight();
+}
+
 function updateLoanPayment(loanId, additionalPayment, callback) {
-    db.get('SELECT amount_paid, amount_owed FROM credit_loans WHERE id = ?', [loanId], (err, loan) => {
+    db.get('SELECT * FROM credit_loans WHERE id = ?', [loanId], (err, loan) => {
         if (err) return callback(err);
-        const newAmountPaid = loan.amount_paid + additionalPayment;
+        if (!loan) return callback(new Error('Loan not found'));
+        const payment = Math.max(0, parseInt(additionalPayment, 10) || 0);
+        const newAmountPaid = (loan.amount_paid || 0) + payment;
         const isPaid = newAmountPaid >= loan.amount_owed;
-        
-        const updateData = {
-            amount_paid: newAmountPaid,
-            status: isPaid ? 'paid' : 'active',
-            paid_at: isPaid ? new Date().toISOString() : null
-        };
-        
+        const nowIso = new Date().toISOString();
+        const periodPaid = (Number(loan.period_paid) || 0) + payment;
+
+        if (isPaid) {
+            db.run(
+                'UPDATE credit_loans SET amount_paid = ?, status = ?, paid_at = ?, period_paid = ?, last_payment_at = ?, min_payment_due = 0, next_due_at = NULL WHERE id = ?',
+                [newAmountPaid, 'paid', nowIso, periodPaid, nowIso, loanId],
+                function(updErr) {
+                    if (updErr) return callback(updErr);
+                    callback(null, {
+                        isPaid: true,
+                        newAmountPaid,
+                        amountOwed: loan.amount_owed,
+                        periodPaid,
+                        minPaymentDue: Number(loan.min_payment_due) || 0,
+                        metMinimum: true
+                    });
+                }
+            );
+            return;
+        }
+
         db.run(
-            'UPDATE credit_loans SET amount_paid = ?, status = ?, paid_at = ? WHERE id = ?',
-            [updateData.amount_paid, updateData.status, updateData.paid_at, loanId],
-            function(err) {
-                if (err) return callback(err);
-                callback(null, { isPaid, newAmountPaid, amountOwed: loan.amount_owed });
+            'UPDATE credit_loans SET amount_paid = ?, period_paid = ?, last_payment_at = ? WHERE id = ?',
+            [newAmountPaid, periodPaid, nowIso, loanId],
+            function(updErr) {
+                if (updErr) return callback(updErr);
+                const minDue = Number(loan.min_payment_due) || 0;
+                callback(null, {
+                    isPaid: false,
+                    newAmountPaid,
+                    amountOwed: loan.amount_owed,
+                    periodPaid,
+                    minPaymentDue: minDue,
+                    metMinimum: minDue <= 0 || periodPaid >= minDue
+                });
             }
         );
     });
@@ -528,6 +834,9 @@ app.get('/credit', isAuthenticated, (req, res) => {
                         const board = highscores || [];
                         const ids = board.map((r) => r.user_id);
                         resolveUserNames(ids).then((userNames) => {
+                            const scoreExplain = creditScore.explainCreditScore(loanHistory || [], {
+                                creditLimit: terms.creditLimit
+                            });
                             res.render('credit', {
                                 user: req.session.user,
                                 userId,
@@ -535,6 +844,8 @@ app.get('/credit', isAuthenticated, (req, res) => {
                                 creditScoreLabel: terms.scoreLabel,
                                 creditLimit: terms.creditLimit,
                                 interestRate: terms.interestRate,
+                                originationFeeRate: creditScore.ORIGINATION_FEE_RATE,
+                                compoundTest: COMPOUND_TEST,
                                 checkFeeRate: terms.checkFeeRate,
                                 checkFeeMin: terms.checkFeeMin,
                                 creditBalance: balanceData.credit_balance,
@@ -542,6 +853,7 @@ app.get('/credit', isAuthenticated, (req, res) => {
                                 loanHistory: loanHistory || [],
                                 highscores: board,
                                 userNames,
+                                scoreExplain,
                                 isAdmin: userId === LENDER_USER_ID
                             });
                         });
@@ -614,10 +926,16 @@ app.post('/credit/borrow', isAuthenticated, async (req, res) => {
                     }
 
                     refreshCreditProfile(userId, () => {});
-                    const ratePct = Math.round(loan.interestRate * 1000) / 10;
+                    const aprPct = (loan.interestRate * 100).toFixed(2);
+                    const fee = loan.originationFee;
+                    const dueLabel = COMPOUND_TEST ? 'every 30 minutes' : 'every 7 days';
                     res.json({
                         success: true,
-                        message: `Loan of ${principal} digipogs issued at ${ratePct}% interest (score ${terms.score}). You received ${Math.floor(principal * 0.9)} digipogs (after 10% tax). You owe ${loan.amountOwed} digipogs.`
+                        message: `Loan of ${principal} digipogs issued (score ${terms.score}). ` +
+                            `One-time fee ${fee} digipogs (10%); you owe ${loan.amountOwed} to start. ` +
+                            `Interest compounds daily at ${aprPct}% APR. ` +
+                            `Minimum payment ${loan.minPaymentDue} digipogs due ${dueLabel} (first due ${new Date(loan.nextDueAt).toLocaleString()}). ` +
+                            `You received ${Math.floor(principal * 0.9)} digipogs after Formbar's 10% transfer tax.`
                     });
                 });
             });
@@ -959,7 +1277,8 @@ app.get('/checks', isAuthenticated, (req, res) => {
                     creditScore: feeTerms.score,
                     creditScoreLabel: feeTerms.scoreLabel,
                     checkFeeRate: feeTerms.checkFeeRate,
-                    checkFeeMin: feeTerms.checkFeeMin
+                    checkFeeMin: feeTerms.checkFeeMin,
+                    isFormbankAccount: Number(userId) === Number(LENDER_USER_ID)
                 });
             });
         });
@@ -1083,8 +1402,8 @@ function renderCheckDetail(req, res, check, userId) {
 }
 
 app.post('/checks/write', isAuthenticated, (req, res) => {
-    const senderId = req.session.userId;
-    if (!senderId) {
+    const senderId = Number(req.session.userId);
+    if (!senderId || isNaN(senderId)) {
         return res.status(400).json({ error: 'User ID not found in session' });
     }
     const rawReceiverId = req.body.receiverId;
@@ -1105,83 +1424,109 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
         return res.status(400).json({ error: 'PIN is required for transfers' });
     }
 
-    const isDefaultUser = senderId === LENDER_USER_ID;
+    const lenderId = Number(LENDER_USER_ID);
+    const senderIsFormbank = senderId === lenderId;
 
     refreshCreditProfile(senderId, (errTerms, terms) => {
         if (errTerms) {
             return res.status(500).json({ error: 'Failed to load credit profile for fee calculation' });
         }
-        const fee = isDefaultUser ? 0 : creditScore.checkFeeFromScore(terms.score, amount);
+        // Always apply score-based fee (including when the FormBank account writes a check)
+        const fee = creditScore.checkFeeFromScore(terms.score, amount);
+        if (!Number.isFinite(fee) || fee < 0) {
+            return res.status(500).json({ error: 'Fee calculation failed' });
+        }
+        console.log(`[checks/write] sender=${senderId} amount=${amount} fee=${fee} total=${amount + fee} receiver=${receiverId} score=${terms.score}`);
         writeCheckWithFee(fee);
     });
 
     function writeCheckWithFee(fee) {
         const total = amount + fee;
-        const depositMemo = fee > 0
-            ? `FormBank check deposit: ${amount} + ${fee} fee`
-            : `FormBank check deposit: ${amount}`;
+        const depositMemo = `FormBank check deposit: ${amount} + ${fee} fee`;
         const payoutMemo = memo || `Check: ${amount} digipogs`;
+
+        function respondSuccess(checkId) {
+            res.json({
+                success: true,
+                checkId,
+                amount,
+                fee,
+                totalCharged: senderIsFormbank ? amount : total
+            });
+        }
+
+        function payoutToReceiver(onFailStatus) {
+            // Brief pause so Formbar rate-limits / balance updates settle after the deposit
+            setTimeout(() => {
+                formbarApi.transferDigipogs(
+                    socket,
+                    lenderId,
+                    receiverId,
+                    amount,
+                    payoutMemo,
+                    LENDER_PIN
+                ).then((result2) => {
+                    if (!result2.success) {
+                        createCheck(senderId, receiverId, amount, fee, onFailStatus, memo, null, () => {});
+                        return res.status(500).json({
+                            error: result2.error || 'FormBank payout to receiver failed',
+                            amount,
+                            fee,
+                            depositCompleted: !senderIsFormbank
+                        });
+                    }
+                    createCheck(senderId, receiverId, amount, fee, 'completed', memo, null, (err, row) => {
+                        if (err) {
+                            return res.status(500).json({ error: 'Check recorded but database error' });
+                        }
+                        respondSuccess(row.id);
+                    });
+                });
+            }, 600);
+        }
 
         // Blank check: deposit amount+fee to FormBank; payout happens on redeem
         if (receiverId === null) {
-            if (isDefaultUser) {
+            if (senderIsFormbank) {
+                // FormBank cannot transfer to itself; funds are already held
                 createCheck(senderId, null, amount, fee, 'uncashed', memo, null, (err, row) => {
                     if (err) {
                         return res.status(500).json({ error: 'Check recorded but database error' });
                     }
-                    res.json({ success: true, checkId: row.id });
+                    respondSuccess(row.id);
                 });
                 return;
             }
             formbarApi.transferDigipogs(
                 socket,
                 senderId,
-                LENDER_USER_ID,
+                lenderId,
                 total,
                 depositMemo,
                 pin
             ).then((result) => {
                 if (!result.success) {
                     createCheck(senderId, null, amount, fee, 'failed', memo, null, () => {});
-                    return res.status(500).json({ error: result.error || 'Deposit to FormBank failed' });
+                    return res.status(500).json({
+                        error: result.error || 'Deposit to FormBank failed',
+                        amount,
+                        fee,
+                        totalCharged: total
+                    });
                 }
-                // No sender PIN stored — FormBank holds funds until redeem
                 createCheck(senderId, null, amount, fee, 'uncashed', memo, null, (err, row) => {
                     if (err) {
                         return res.status(500).json({ error: 'Check recorded but database error' });
                     }
-                    res.json({ success: true, checkId: row.id });
+                    respondSuccess(row.id);
                 });
             });
             return;
         }
 
         // Specific receiver: sender → FormBank (amount+fee), then FormBank → receiver (amount)
-        function payoutToReceiver(checkStatusOnFail) {
-            formbarApi.transferDigipogs(
-                socket,
-                LENDER_USER_ID,
-                receiverId,
-                amount,
-                payoutMemo,
-                LENDER_PIN
-            ).then((result2) => {
-                if (!result2.success) {
-                    createCheck(senderId, receiverId, amount, fee, checkStatusOnFail, memo, null, () => {});
-                    return res.status(500).json({
-                        error: result2.error || 'FormBank payout to receiver failed'
-                    });
-                }
-                createCheck(senderId, receiverId, amount, fee, 'completed', memo, null, (err, row) => {
-                    if (err) {
-                        return res.status(500).json({ error: 'Check recorded but database error' });
-                    }
-                    res.json({ success: true, checkId: row.id });
-                });
-            });
-        }
-
-        if (isDefaultUser) {
+        if (senderIsFormbank) {
+            // Cannot deposit to self; FormBank pays the receiver the check amount only
             payoutToReceiver('failed');
             return;
         }
@@ -1189,14 +1534,19 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
         formbarApi.transferDigipogs(
             socket,
             senderId,
-            LENDER_USER_ID,
+            lenderId,
             total,
             depositMemo,
             pin
         ).then((result1) => {
             if (!result1.success) {
                 createCheck(senderId, receiverId, amount, fee, 'failed', memo, null, () => {});
-                return res.status(500).json({ error: result1.error || 'Deposit to FormBank failed' });
+                return res.status(500).json({
+                    error: result1.error || 'Deposit to FormBank failed',
+                    amount,
+                    fee,
+                    totalCharged: total
+                });
             }
             payoutToReceiver('failed');
         });
@@ -1286,4 +1636,5 @@ if (process.env.DEBUG_SOCKET === 'true') {
 // Start server
 app.listen(PORT, () => {
     console.log(`Server is running at http://localhost:${PORT}`);
+    startCompoundScheduler();
 });

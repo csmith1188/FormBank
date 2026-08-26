@@ -7,10 +7,12 @@
 ### Credit & Loans
 - **Credit score**: FICO-style 300–850 score from payment history, utilization, credit age, and repayment volume (new borrowers start at 580 / Fair)
 - **Score-based terms**: Higher score → higher credit limit, lower interest, smaller check fees
-- **Loan system**: Interest is set from your score when you borrow (about 8%–30%)
+- **Loan system**: One-time 10% origination fee, then score-based APR (about 4%–24%) that compounds on the remaining balance every night at midnight
+- **Minimum payments / due dates**: 10% of remaining (min 25) due every 7 days; on-time streaks boost score, missed payments penalize harder than unpaid balance
 - **Credit balance**: Overpayments are credited for future repayments
 - **One active loan** per user at a time
 - **Tax-aware**: Handles Formbar’s 10% transfer tax correctly
+- **COMPOUND_TEST**: Set `COMPOUND_TEST=true` in `.env` to apply a full day of interest (and a due-date check) every 30 minutes for testing
 
 ### Checks
 - **Write checks** to a specific user (Formbar user ID) or leave receiver blank
@@ -49,6 +51,7 @@
    API_KEY=your_api_key_here
    LENDER_USER_ID=1
    LENDER_PIN=3639
+   COMPOUND_TEST=false
    ```
 
 ### Environment variables
@@ -61,6 +64,7 @@
 | `API_KEY` | API key for the Formbar Socket.io connection |
 | `LENDER_USER_ID` | Formbar user ID of the lender/default account |
 | `LENDER_PIN` | PIN for transfers from the lender account (and for redemption on behalf of sender when applicable) |
+| `COMPOUND_TEST` | Set to `true` to compound loan interest every 30 minutes (each tick = one day) instead of nightly at midnight |
 
 ### Run the app
 ```bash
@@ -72,8 +76,10 @@ The app is available at `http://localhost:3000` (or your configured `PORT`).
 
 ### Credit & loans (summary)
 - Credit score (300–850) is computed from loan history; see `creditScore.js`
-- Score sets **limit**, **interest**, and **check fees**
-- Borrow **P** digipogs → receive **0.9×P** (after 10% tax), owe **P×(1 + rate)**
+- Score sets **limit**, **compounding APR**, and **check fees**
+- Borrow **P** digipogs → receive **0.9×P** (Formbar tax); start owing **1.1×P** (10% FormBank origination fee)
+- Remaining balance compounds **daily at midnight** (or every 30 minutes when `COMPOUND_TEST=true`)
+- **Minimum payments** (10% of remaining, at least 25 digipogs) are due every **7 days** (every 30 minutes in `COMPOUND_TEST`); on-time streaks raise score, misses hurt more than unpaid balance alone
 - Repayments reduce the balance; overpayments go to credit balance
 - One active loan per user; paying loans and building history raises your score and terms
 

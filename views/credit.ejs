@@ -256,7 +256,7 @@
                 else if (creditScore >= 740) scoreClass = 'score-very-good';
                 else if (creditScore >= 670) scoreClass = 'score-good';
                 else if (creditScore < 580) scoreClass = 'score-poor';
-                var interestPct = (interestRate * 100).toFixed(1);
+                var interestPct = (interestRate * 100).toFixed(2);
                 var feePct = (checkFeeRate * 100).toFixed(1);
             %>
             <div class="stat-card">
@@ -270,9 +270,9 @@
                 <div class="sub">Based on your score</div>
             </div>
             <div class="stat-card">
-                <h3>Your Interest Rate</h3>
+                <h3>Your APR</h3>
                 <div class="value"><%= interestPct %>%</div>
-                <div class="sub">On new loans</div>
+                <div class="sub">Compounds <%= typeof compoundTest !== 'undefined' && compoundTest ? 'every 30 min (test)' : 'nightly' %></div>
             </div>
             <div class="stat-card">
                 <h3>Credit Balance</h3>
@@ -292,15 +292,39 @@
             <h2>Active Loan</h2>
             <div class="loan-details">
                 <p><strong>Principal:</strong> <%= activeLoan.principal %> digipogs</p>
-                <p><strong>Interest Rate:</strong> <%= (activeLoan.interest_rate * 100).toFixed(1) %>%</p>
+                <p><strong>Origination fee:</strong> 10% (included in balance at issue)</p>
+                <p><strong>APR:</strong> <%= (activeLoan.interest_rate * 100).toFixed(2) %>% (compounds <%= typeof compoundTest !== 'undefined' && compoundTest ? 'every 30 minutes while COMPOUND_TEST is on' : 'every night at midnight' %>)</p>
                 <p><strong>Total Owed:</strong> <%= activeLoan.amount_owed %> digipogs</p>
                 <p><strong>Amount Paid:</strong> <%= activeLoan.amount_paid %> digipogs</p>
                 <p><strong>Remaining:</strong> <strong style="color: #e53e3e;"><%= activeLoan.amount_owed - activeLoan.amount_paid %> digipogs</strong></p>
+                <%
+                    var minDue = activeLoan.min_payment_due || 0;
+                    var periodPaidAmt = activeLoan.period_paid || 0;
+                    var towardMin = Math.min(periodPaidAmt, minDue);
+                    var stillNeed = Math.max(0, minDue - periodPaidAmt);
+                    var overdue = typeof scoreExplain !== 'undefined' && scoreExplain && scoreExplain.currentlyOverdue;
+                %>
+                <p><strong>Minimum payment:</strong> <%= minDue %> digipogs
+                    (<%= towardMin %> / <%= minDue %> this period<% if (stillNeed > 0) { %>; <span style="color:#c62828;"><%= stillNeed %> still needed</span><% } else { %>; <span style="color:#2E7D32;">minimum met</span><% } %>)</p>
+                <% if (activeLoan.next_due_at) { %>
+                <p><strong>Next due:</strong>
+                    <span style="<%= overdue ? 'color:#c62828;font-weight:600;' : '' %>">
+                        <%= new Date(activeLoan.next_due_at).toLocaleString() %>
+                        <%= overdue ? '(OVERDUE)' : '' %>
+                    </span>
+                </p>
+                <% } %>
+                <p><strong>On-time streak:</strong> <%= activeLoan.on_time_streak || 0 %>
+                    · <strong>Missed payments:</strong> <%= activeLoan.missed_payments || 0 %></p>
                 <p><strong>Loan Date:</strong> <%= new Date(activeLoan.created_at).toLocaleDateString() %></p>
+                <% if (activeLoan.last_compounded_at) { %>
+                <p><strong>Last interest compound:</strong> <%= new Date(activeLoan.last_compounded_at).toLocaleString() %></p>
+                <% } %>
             </div>
 
             <div class="alert alert-info">
-                <strong>Note:</strong> When you repay, Formbar applies a 10% tax. If you send R digipogs, the lender receives 0.9*R, but your loan balance decreases by R (the pre-tax amount you sent). Paying down loans improves your credit score.
+                <strong>Note:</strong> When you repay, Formbar applies a 10% tax. If you send R digipogs, the lender receives 0.9*R, but your loan balance decreases by R (the pre-tax amount you sent).
+                Meet the <strong>minimum payment</strong> before each due date to grow your on-time streak; missing it hurts your score more than simply carrying a balance.
             </div>
 
             <h3 style="margin-top: 20px; margin-bottom: 15px;">Make a Payment</h3>
@@ -308,7 +332,10 @@
                 <div class="form-group">
                     <label for="repayAmount">Repayment Amount (digipogs)</label>
                     <input type="number" id="repayAmount" name="amount" min="1" required>
-                    <small style="color: #666;">Suggested: <%= activeLoan.amount_owed - activeLoan.amount_paid %> digipogs (full repayment)</small>
+                    <small style="color: #666;">
+                        Minimum still needed this period: <%= stillNeed %> digipogs
+                        · Full payoff: <%= activeLoan.amount_owed - activeLoan.amount_paid %> digipogs
+                    </small>
                 </div>
                 <div class="form-group">
                     <label for="repayPin">PIN (required for repayment)</label>
@@ -323,15 +350,22 @@
         <div class="section">
             <h2>Borrow Digipogs</h2>
             <div class="alert alert-info">
-                <strong>Loan Terms:</strong> Your rate is <strong><%= interestPct %>%</strong> based on a credit score of <strong><%= creditScore %></strong> (<%= creditScoreLabel %>).
-                Borrow up to <strong><%= creditLimit %></strong> digipogs. When you borrow P digipogs, you receive 0.9×P (after 10% Formbar tax) but owe P×<%= (1 + interestRate).toFixed(3) %>.
+                <strong>Loan Terms:</strong> Borrowing adds a <strong>one-time 10% fee</strong> to what you owe, then interest compounds on your remaining balance
+                <% if (typeof compoundTest !== 'undefined' && compoundTest) { %>
+                <strong>every 30 minutes</strong> (COMPOUND_TEST)
+                <% } else { %>
+                <strong>every night at midnight</strong>
+                <% } %>
+                at <strong><%= interestPct %>% APR</strong> (score <%= creditScore %> · <%= creditScoreLabel %>).
+                Borrow up to <strong><%= creditLimit %></strong> digipogs. When you borrow P, you receive 0.9×P after Formbar tax and start owing 1.10×P.
+                Minimum payments (10% of remaining, at least 25) are due <%= typeof compoundTest !== 'undefined' && compoundTest ? 'every 30 minutes in test mode' : 'every 7 days' %>.
                 One active loan at a time. Check fees are currently <%= feePct %>% (min <%= checkFeeMin %> digipogs).
             </div>
             <form id="borrowForm" onsubmit="return submitBorrow(event)">
                 <div class="form-group">
                     <label for="borrowAmount">Loan Amount (digipogs)</label>
                     <input type="number" id="borrowAmount" name="amount" min="1" max="<%= creditLimit %>" required>
-                    <small style="color: #666;">Maximum: <%= creditLimit %> digipogs · Interest: <%= interestPct %>%</small>
+                    <small style="color: #666;">Maximum: <%= creditLimit %> digipogs · 10% fee + <%= interestPct %>% APR</small>
                 </div>
                 <button type="submit" class="btn btn-primary">Request Loan</button>
             </form>
@@ -342,15 +376,40 @@
         <div class="section">
             <h2>How your score works</h2>
             <p style="color:#555; line-height:1.6; margin-bottom:12px;">
-                Scores range from <strong>300–850</strong> (FICO-style). Paying off loans, keeping balances low, building history, and repaying more digipogs raise your score.
-                A higher score unlocks a larger credit limit, lower interest, and smaller check fees.
+                Scores range from <strong>300–850</strong>. The loop that builds credit: take a loan, pay it back
+                <strong>fully</strong> and <strong>quickly</strong>, then repeat. Scores are recalculated whenever interest compounds
+                (<%= typeof compoundTest !== 'undefined' && compoundTest ? 'every 30 minutes in test mode' : 'every night at midnight' %>).
             </p>
+            <ul style="color:#555; line-height:1.7; margin-left:20px; margin-bottom:14px;">
+                <li><strong>Utilization:</strong> borrowing a large share of your limit at once lowers your score</li>
+                <li><strong>Unpaid balance:</strong> the more of an open loan still unpaid, the more you lose</li>
+                <li><strong>Payments:</strong> you gain score in proportion to how much you’ve paid back</li>
+                <li><strong>Minimum due dates:</strong> pay at least the minimum before each due date — misses hurt more than carrying a balance; on-time streaks boost your score</li>
+                <li><strong>Payoff speed:</strong> finishing loans in days (not weeks) adds bonus points</li>
+                <li><strong>Open too long:</strong> leaving a balance open past a week slowly drains your score</li>
+            </ul>
+            <% if (typeof scoreExplain !== 'undefined' && scoreExplain) { %>
+            <p style="color:#555; line-height:1.6; margin-bottom:12px;">
+                Your snapshot:
+                <% if (scoreExplain.hasActiveLoan) { %>
+                utilization <strong><%= Math.round(scoreExplain.utilization * 100) %>%</strong> of limit,
+                unpaid <strong><%= Math.round(scoreExplain.unpaidRatio * 100) %>%</strong> of current loan,
+                paid progress <strong><%= Math.round(scoreExplain.paidPortion * 100) %>%</strong>,
+                on-time streak <strong><%= scoreExplain.onTimeStreak %></strong>,
+                missed payments <strong><%= scoreExplain.missedPayments %></strong><%= scoreExplain.currentlyOverdue ? ', <span style="color:#c62828;">currently overdue</span>' : '' %>,
+                <% } else { %>
+                no active loan (clean utilization),
+                missed payments (lifetime) <strong><%= scoreExplain.missedPayments %></strong>,
+                <% } %>
+                <strong><%= scoreExplain.paidLoans %></strong> loan<%= scoreExplain.paidLoans === 1 ? '' : 's' %> paid in full.
+            </p>
+            <% } %>
             <ul style="color:#555; line-height:1.7; margin-left:20px;">
-                <li><strong>Poor</strong> (300–579): lowest limit, highest interest &amp; fees</li>
+                <li><strong>Poor</strong> (300–579): lowest limits (from 250), highest interest &amp; fees</li>
                 <li><strong>Fair</strong> (580–669): starter range for new borrowers</li>
                 <li><strong>Good</strong> (670–739): better rates and higher limit</li>
                 <li><strong>Very Good</strong> (740–799): strong terms</li>
-                <li><strong>Exceptional</strong> (800–850): best limit, interest, and fees</li>
+                <li><strong>Exceptional</strong> (800–850): best terms, up to 1,000,000 digipog limit</li>
             </ul>
         </div>
 
@@ -397,7 +456,7 @@
                     <tr>
                         <th>Date</th>
                         <th>Principal</th>
-                        <th>Rate</th>
+                        <th>APR</th>
                         <th>Total Owed</th>
                         <th>Amount Paid</th>
                         <th>Status</th>
@@ -408,7 +467,7 @@
                     <tr>
                         <td><%= new Date(loan.created_at).toLocaleDateString() %></td>
                         <td><%= loan.principal %> digipogs</td>
-                        <td><%= (loan.interest_rate * 100).toFixed(1) %>%</td>
+                        <td><%= (loan.interest_rate * 100).toFixed(2) %>%</td>
                         <td><%= loan.amount_owed %> digipogs</td>
                         <td><%= loan.amount_paid %> digipogs</td>
                         <td>
