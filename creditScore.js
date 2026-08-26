@@ -42,8 +42,6 @@ const MIN_PAYMENT_RATE = 0.10;
 const MIN_PAYMENT_FLOOR = 25;
 /** Days between minimum-payment due dates (production). */
 const PAYMENT_PERIOD_DAYS = 7;
-/** When COMPOUND_TEST is on: one tick for interest + due dates (1 minute). */
-const COMPOUND_TEST_PERIOD_MS = 60 * 1000;
 /** Missed-payment score hit (harder than unpaid-balance alone). */
 const MISSED_PAYMENT_PENALTY = 30;
 const MISSED_PAYMENT_PENALTY_CAP = 150;
@@ -77,9 +75,9 @@ function loanRemaining(loan) {
     return Math.max(0, owed - paid);
 }
 
-/** Payment period length in ms (7 days, or COMPOUND_TEST_PERIOD_MS when testing). */
+/** Payment period length in ms (7 days, or 30 min when COMPOUND_TEST). */
 function getPaymentPeriodMs(compoundTest) {
-    if (compoundTest) return COMPOUND_TEST_PERIOD_MS;
+    if (compoundTest) return 30 * 60 * 1000;
     return PAYMENT_PERIOD_DAYS * MS_PER_DAY;
 }
 
@@ -496,7 +494,6 @@ module.exports = {
     MIN_PAYMENT_RATE,
     MIN_PAYMENT_FLOOR,
     PAYMENT_PERIOD_DAYS,
-    COMPOUND_TEST_PERIOD_MS,
     computeCreditScore,
     explainCreditScore,
     scoreLabel,

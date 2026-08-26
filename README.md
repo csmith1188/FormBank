@@ -12,7 +12,7 @@
 - **Credit balance**: Overpayments are credited for future repayments
 - **One active loan** per user at a time
 - **Tax-aware**: Handles Formbar’s 10% transfer tax correctly
-- **COMPOUND_TEST**: Set `COMPOUND_TEST=true` in `.env` to apply a full day of interest (and a due-date check) every minute for testing
+- **COMPOUND_TEST**: Set `COMPOUND_TEST=true` in `.env` to apply a full day of interest (and a due-date check) every 30 minutes for testing
 
 ### Checks
 - **Write checks** to a specific user (Formbar user ID) or leave receiver blank
@@ -64,7 +64,7 @@
 | `API_KEY` | API key for the Formbar Socket.io connection |
 | `LENDER_USER_ID` | Formbar user ID of the lender/default account |
 | `LENDER_PIN` | PIN for transfers from the lender account (and for redemption on behalf of sender when applicable) |
-| `COMPOUND_TEST` | Set to `true` to compound loan interest every minute (each tick = one day) instead of nightly at midnight |
+| `COMPOUND_TEST` | Set to `true` to compound loan interest every 30 minutes (each tick = one day) instead of nightly at midnight |
 
 ### Run the app
 ```bash
@@ -78,8 +78,8 @@ The app is available at `http://localhost:3000` (or your configured `PORT`).
 - Credit score (300–850) is computed from loan history; see `creditScore.js`
 - Score sets **limit**, **compounding APR**, and **check fees**
 - Borrow **P** digipogs → receive **0.9×P** (Formbar tax); start owing **1.1×P** (10% FormBank origination fee)
-- Remaining balance compounds **daily at midnight** (or every minute when `COMPOUND_TEST=true`)
-- **Minimum payments** (10% of remaining, at least 25 digipogs) are due every **7 days** (every minute in `COMPOUND_TEST`); on-time streaks raise score, misses hurt more than unpaid balance alone
+- Remaining balance compounds **daily at midnight** (or every 30 minutes when `COMPOUND_TEST=true`)
+- **Minimum payments** (10% of remaining, at least 25 digipogs) are due every **7 days** (every 30 minutes in `COMPOUND_TEST`); on-time streaks raise score, misses hurt more than unpaid balance alone
 - Repayments reduce the balance; overpayments go to credit balance
 - One active loan per user; paying loans and building history raises your score and terms
 
