@@ -6,7 +6,8 @@
     "test": "nodemon app.js",
     "start": "node app.js",
     "init-db": "node db/init-db.js",
-    "reduce-scores": "node db/reduce-scores.js"
+    "reduce-scores": "node db/reduce-scores.js",
+    "recalc-limits": "node db/recalc-limits.js"
   },
   "author": "C. Smith",
   "license": "ISC",

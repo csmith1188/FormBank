@@ -7,17 +7,38 @@
  *
  * DB path: DATABASE_FILE from .env, or ./db/database.db
  */
-require('dotenv').config();
+try { require('dotenv').config(); } catch (_) { /* optional */ }
+const fs = require('fs');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 const creditScore = require('../creditScore');
 
 const SCORE_DROP = 250;
-const dbPath = process.env.DATABASE_FILE || './db/database.db';
-const resolvedPath = path.resolve(dbPath);
+
+function resolveDbPath() {
+    const candidates = [
+        process.env.DATABASE_FILE,
+        './db/database.db',
+        './db/app.db'
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+        const resolved = path.resolve(candidate);
+        try {
+            if (fs.existsSync(resolved) && fs.statSync(resolved).size > 0) return resolved;
+        } catch (_) { /* skip */ }
+    }
+    return path.resolve(process.env.DATABASE_FILE || './db/database.db');
+}
+
+const resolvedPath = resolveDbPath();
 
 console.log(`Opening database: ${resolvedPath}`);
 console.log(`Reducing each credit_score by ${SCORE_DROP} (min ${creditScore.SCORE_MIN}), then recalculating limits...\n`);
+
+if (!fs.existsSync(resolvedPath)) {
+    console.error('Database file not found. Nothing to update.');
+    process.exit(1);
+}
 
 const db = new sqlite3.Database(resolvedPath, (err) => {
     if (err) {

@@ -377,16 +377,20 @@
             <h2>How your score works</h2>
             <p style="color:#555; line-height:1.6; margin-bottom:12px;">
                 Scores range from <strong>300–850</strong>. The loop that builds credit: take a loan, pay it back
-                <strong>fully</strong> and <strong>quickly</strong>, then repeat. Scores are recalculated whenever interest compounds
+                <strong>fully</strong> and <strong>quickly</strong>, then repeat. Early on, good and bad habits move your score a lot;
+                near the top, the same habits only nudge it — so high scores and large credit lines take time.
+                Scores refresh whenever interest compounds
                 (<%= typeof compoundTest !== 'undefined' && compoundTest ? 'every 30 minutes in test mode' : 'every night at midnight' %>).
             </p>
             <ul style="color:#555; line-height:1.7; margin-left:20px; margin-bottom:14px;">
+                <li><strong>Mobility:</strong> bigger score swings at low scores; small swings once you’re near Exceptional</li>
                 <li><strong>Utilization:</strong> borrowing a large share of your limit at once lowers your score</li>
                 <li><strong>Unpaid balance:</strong> the more of an open loan still unpaid, the more you lose</li>
                 <li><strong>Payments:</strong> you gain score in proportion to how much you’ve paid back</li>
                 <li><strong>Minimum due dates:</strong> pay at least the minimum before each due date — misses hurt more than carrying a balance; on-time streaks boost your score</li>
                 <li><strong>Payoff speed:</strong> finishing loans in days (not weeks) adds bonus points</li>
                 <li><strong>Open too long:</strong> leaving a balance open past a week slowly drains your score</li>
+                <li><strong>Credit lines:</strong> limits rise slowly until high scores — the top of the 100,000 range is reserved for near-perfect history</li>
             </ul>
             <% if (typeof scoreExplain !== 'undefined' && scoreExplain) { %>
             <p style="color:#555; line-height:1.6; margin-bottom:12px;">
@@ -409,7 +413,7 @@
                 <li><strong>Fair</strong> (580–669): building history</li>
                 <li><strong>Good</strong> (670–739): better rates and higher limit</li>
                 <li><strong>Very Good</strong> (740–799): strong terms</li>
-                <li><strong>Exceptional</strong> (800–850): best terms, up to 1,000,000 digipog limit</li>
+                <li><strong>Exceptional</strong> (800–850): best terms, up to 100,000 digipog limit</li>
             </ul>
         </div>
 
