@@ -13,11 +13,11 @@
 
 ### Checks
 - **Write checks** to a specific user (Formbar user ID) or leave receiver blank
-- **One deposit**: sender pays FormBank enough to cover Formbar’s 10% tax on *both* legs plus FormBank’s **net 5%** fee
-- **Payout**: FormBank sends a grossed-up amount so the receiver nets **100%** of the check amount
-- **Blank check**: same deposit at write time; FormBank pays the redeemer on the status page
+- **One deposit**: sender pays the FormBank **pool** enough to cover Formbar’s 10% tax on *both* legs plus FormBank’s **net 5%** fee
+- **Payout**: the pool sends a grossed-up amount so the receiver nets **100%** of the check amount
+- **Blank check**: same deposit at write time; the pool pays the redeemer on the status page
 - **Check status page**: Sender and receiver can view check details and a QR code for the status URL
-- **FormBank account**: If the writer is the lender (`LENDER_USER_ID`), the deposit charge is skipped (funds already at FormBank)
+- **FormBank writer**: If the writer is the pool owner (`LENDER_USER_ID`), the deposit charge is skipped (funds already in the pool)
 
 ## Setup
 
@@ -48,6 +48,7 @@
    API_KEY=your_api_key_here
    LENDER_USER_ID=1
    LENDER_PIN=3639
+   POOL_ID=123
    CREDIT_LIMIT_STEP=500
    ```
 
@@ -59,8 +60,9 @@
 | `AUTH_URL` | Formbar OAuth base URL |
 | `THIS_URL` | This app’s base URL (for redirects and check links) |
 | `API_KEY` | API key for the Formbar Socket.io connection |
-| `LENDER_USER_ID` | Formbar user ID of the lender/default account |
-| `LENDER_PIN` | PIN for transfers from the lender account (and for redemption on behalf of sender when applicable) |
+| `LENDER_USER_ID` | Formbar user ID of the lender/default account (also the check-pool owner) |
+| `LENDER_PIN` | PIN for loan transfers from the lender account, and for check payouts from the pool (must match the pool owner’s Formbar PIN) |
+| `POOL_ID` | Formbar digipog pool ID that receives check deposits and sends check payouts (required for checks; not the developer pool `0`) |
 | `CREDIT_LIMIT_STEP` | Starting credit limit and amount added each repayment threshold (default: 500) |
 
 ### Run the app
@@ -77,8 +79,8 @@ The app is available at `http://localhost:3000` (or your configured `PORT`).
 - One active loan per user; every time your total repayments reach your current credit limit, that limit increases by `CREDIT_LIMIT_STEP` (default 500)
 
 ### Checks
-- **With receiver ID**: One transfer sender → FormBank (grossed for two tax legs + 5% FormBank fee), then FormBank → receiver (grossed so they net 100% of the amount) using `LENDER_PIN`.
-- **No receiver (blank)**: Same deposit to FormBank at write time. On redeem, FormBank → receiver (full net amount).
+- **With receiver ID**: One transfer sender → FormBank pool (grossed for two tax legs + 5% FormBank fee), then pool → receiver (grossed so they net 100% of the amount) using `LENDER_PIN` (pool owner PIN).
+- **No receiver (blank)**: Same deposit to the pool at write time. On redeem, pool → receiver (full net amount).
 - **FormBank writer**: When the writer’s user ID equals `LENDER_USER_ID`, the deposit step is skipped and only the payout runs (for a specific receiver).
 
 ## Main routes

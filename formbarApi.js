@@ -31,18 +31,36 @@ async function getUserById(formbarBaseUrl, apiKey, userId) {
 }
 
 /**
- * Transfer digipogs from one user to another via Formbar
+ * Normalize a Formbar transfer party into `{ id, type }`.
+ * @param {number|string|{id?: number, type?: string}} party
+ * @param {'user'|'pool'} defaultType
+ * @returns {{id: number, type: 'user'|'pool'}|null}
+ */
+function normalizeTransferParty(party, defaultType) {
+    if (party && typeof party === 'object') {
+        const id = Number(party.id);
+        const type = party.type || defaultType;
+        if (!Number.isInteger(id) || id < 0 || (type !== 'user' && type !== 'pool')) return null;
+        return { id, type };
+    }
+    const id = Number(party);
+    if (!Number.isInteger(id) || id < 0) return null;
+    return { id, type: defaultType };
+}
+
+/**
+ * Transfer digipogs via Formbar (user or pool parties).
  * Based on Formbar.js documentation: https://github.com/csmith1188/Formbar.js/wiki/Digipogs
  * @param {Object} socket - Socket.io client instance
- * @param {number} fromUserId - Formbar user ID of sender
- * @param {number} toUserId - Formbar user ID of recipient
+ * @param {number|{id: number, type: string}} from - Sender user/pool
+ * @param {number|{id: number, type: string}} to - Recipient user/pool
  * @param {number} amount - Amount to transfer (pre-tax)
  * @param {string} memo - Reason/memo for transfer
  * @param {string|number} pin - PIN for authentication (must be a number)
- * @param {boolean} isPool - Whether transferring to a pool (default: false)
+ * @param {boolean|{fromType?: 'user'|'pool', toType?: 'user'|'pool'}} [options] - `true` means to-pool; or `{ fromType, toType }`
  * @returns {Promise<{success: boolean, error?: string}>}
  */
-function transferDigipogs(socket, fromUserId, toUserId, amount, memo, pin, isPool = false) {
+function transferDigipogs(socket, from, to, amount, memo, pin, options = false) {
     return new Promise((resolve) => {
         if (!socket || !socket.connected) {
             return resolve({ success: false, error: 'Not connected to Formbar server' });
@@ -58,18 +76,22 @@ function transferDigipogs(socket, fromUserId, toUserId, amount, memo, pin, isPoo
             return resolve({ success: false, error: 'Invalid PIN - must be a number' });
         }
 
+        const opts = (options === true || options === false)
+            ? { toType: options ? 'pool' : 'user' }
+            : (options || {});
+        const fromParty = normalizeTransferParty(from, opts.fromType || 'user');
+        const toParty = normalizeTransferParty(to, opts.toType || 'user');
+        if (!fromParty || !toParty) {
+            return resolve({ success: false, error: 'Invalid sender or recipient' });
+        }
+
         const data = {
-            from: fromUserId,
-            to: toUserId,
+            from: fromParty,
+            to: toParty,
             amount: amount,
             pin: pinNumber, // Must be a number!
-            reason: 'Formbank: ' + memo || 'FormBank transfer'
+            reason: memo ? ('Formbank: ' + memo) : 'FormBank transfer'
         };
-
-        // Only set pool: true if transferring to a pool
-        if (isPool) {
-            data.pool = true;
-        }
 
         // According to Formbar docs, response comes as 'transferResponse' event
         // Format: { success: true/false, message: "..." }
@@ -112,7 +134,7 @@ function transferDigipogs(socket, fromUserId, toUserId, amount, memo, pin, isPoo
         socket.once('transferResponse', responseHandler);
 
         // Emit the transfer request
-        console.log('Emitting transferDigipogs:', { from: fromUserId, to: toUserId, amount, pool: isPool });
+        console.log('Emitting transferDigipogs:', { from: fromParty, to: toParty, amount });
         socket.emit('transferDigipogs', data);
 
         // Set a timeout - Formbar should respond via transferResponse event
