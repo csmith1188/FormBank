@@ -85,9 +85,12 @@ function transferDigipogs(socket, from, to, amount, memo, pin, options = false) 
             return resolve({ success: false, error: 'Invalid sender or recipient' });
         }
 
+        // User-to-user: numeric ids (current Formbar main). Pool parties: typed { id, type }
+        // so we are ready when Formbar DEV (pool send/receive) becomes main.
+        const usesPool = fromParty.type === 'pool' || toParty.type === 'pool';
         const data = {
-            from: fromParty,
-            to: toParty,
+            from: usesPool ? fromParty : fromParty.id,
+            to: usesPool ? toParty : toParty.id,
             amount: amount,
             pin: pinNumber, // Must be a number!
             reason: memo ? ('Formbank: ' + memo) : 'FormBank transfer'
@@ -134,7 +137,7 @@ function transferDigipogs(socket, from, to, amount, memo, pin, options = false) 
         socket.once('transferResponse', responseHandler);
 
         // Emit the transfer request
-        console.log('Emitting transferDigipogs:', { from: fromParty, to: toParty, amount });
+        console.log('Emitting transferDigipogs:', { from: data.from, to: data.to, amount });
         socket.emit('transferDigipogs', data);
 
         // Set a timeout - Formbar should respond via transferResponse event

@@ -68,11 +68,13 @@ const LOGIN_REDIRECT_URL = `${THIS_URL}/login`;
 const API_KEY = process.env.API_KEY || 'your_api_key';
 const LENDER_USER_ID = parseInt(process.env.LENDER_USER_ID) || 1;
 const LENDER_PIN = parseInt(process.env.LENDER_PIN) || 3639; // PIN must be a number per Formbar docs
-/** Formbar digipog pool that holds check deposits and pays check payouts. */
+/** Formbar digipog pool for check deposits/payouts. Blank/0 falls back to the lender user. */
 const POOL_ID = parseInt(process.env.POOL_ID, 10);
-const CHECK_POOL = Number.isInteger(POOL_ID) && POOL_ID > 0
+const USE_CHECK_POOL = Number.isInteger(POOL_ID) && POOL_ID > 0;
+const CHECK_FUNDS = USE_CHECK_POOL
     ? { id: POOL_ID, type: 'pool' }
-    : null;
+    : { id: LENDER_USER_ID, type: 'user' };
+const CHECK_FUNDS_LABEL = USE_CHECK_POOL ? 'FormBank pool' : 'FormBank';
 /** Starting credit limit and amount added each time the repayment threshold is met. */
 const CREDIT_LIMIT_STEP = Math.max(1, parseInt(process.env.CREDIT_LIMIT_STEP, 10) || 500);
 /** Public Formbar origin for profile links (defaults to production Formbar). */
@@ -297,13 +299,13 @@ function calcCheckFee(amount) {
     return Math.ceil(a * FORMBANK_FEE_RATE);
 }
 
-/** Gross FormBank pool → receiver so they net the full check amount. */
+/** Gross FormBank → receiver so they net the full check amount. */
 function checkPayoutFromFormBank(amount) {
     return sendAmountForNet(amount);
 }
 
 /**
- * Gross sender → FormBank pool so that after tax the pool can:
+ * Gross sender → FormBank so that after tax FormBank can:
  * 1) pay the receiver (full net amount), and
  * 2) keep ~5% of the check amount.
  */
@@ -313,26 +315,19 @@ function checkChargeToFormBank(amount) {
     return sendAmountForNet(payout + fee);
 }
 
-function checkPoolNotConfiguredError() {
-    return { success: false, error: 'FormBank check pool is not configured. Set POOL_ID in .env to a Formbar pool ID (not 0).' };
-}
-
 /**
- * Pay a funded check from the FormBank pool to the receiver (grossed up for Formbar tax).
- * Uses the pool owner's PIN (`LENDER_PIN`).
+ * Pay a funded check from FormBank (pool if POOL_ID is set, otherwise the lender user).
+ * Payouts use `LENDER_PIN` (pool owner PIN, or lender PIN).
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 function payCheckFromFormBank(check, receiverId) {
-    if (!CHECK_POOL) {
-        return Promise.resolve(checkPoolNotConfiguredError());
-    }
     const payout = checkPayoutFromFormBank(check.amount);
     const memo = check.memo
         ? `Check #${check.id}: ${check.memo}`
         : `Check #${check.id} payout`;
     return formbarApi.transferDigipogs(
         socket,
-        CHECK_POOL,
+        CHECK_FUNDS,
         receiverId,
         payout,
         memo,
@@ -1010,7 +1005,7 @@ app.get('/checks/:id', (req, res, next) => {
                 if (!claimed) {
                     return res.status(400).send('Check already redeemed by someone else.');
                 }
-                // Funds already sit in the FormBank pool from write time; pay receiver from the pool.
+                // Funds already sit at FormBank from write time; pay receiver from FormBank.
                 payCheckFromFormBank(check, receiverId).then((result) => {
                     clearCheckPin(checkId);
                     setCheckStatus(checkId, result.success ? 'completed' : 'failed', () => {});
@@ -1060,7 +1055,7 @@ app.get('/checks/:id', (req, res, next) => {
                 if (!claimed) {
                     return res.status(403).send('This check was already redeemed by someone else.');
                 }
-                // Funds already sit in the FormBank pool from write time; pay receiver from the pool.
+                // Funds already sit at FormBank from write time; pay receiver from FormBank.
                 payCheckFromFormBank(check, userId).then((result) => {
                     clearCheckPin(checkId);
                     setCheckStatus(checkId, result.success ? 'completed' : 'failed', () => {});
@@ -1128,10 +1123,6 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
         return res.status(400).json({ error: 'PIN is required for transfers' });
     }
 
-    if (!CHECK_POOL) {
-        return res.status(500).json({ error: checkPoolNotConfiguredError().error });
-    }
-
     const fee = calcCheckFee(amount);
     const payout = checkPayoutFromFormBank(amount);
     const chargeTotal = checkChargeToFormBank(amount);
@@ -1140,13 +1131,13 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
 
     const fundThen = (afterFund) => {
         if (isFormBank) {
-            // Pool already holds the digipogs; skip the deposit charge.
+            // FormBank already holds the digipogs; skip the deposit charge.
             return afterFund({ success: true });
         }
         return formbarApi.transferDigipogs(
             socket,
             senderId,
-            CHECK_POOL,
+            CHECK_FUNDS,
             chargeTotal,
             `Check deposit: net ${amount}, FormBank fee ${fee}`,
             pin
@@ -1158,7 +1149,7 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
         fundThen((result) => {
             if (!result.success) {
                 createCheck(senderId, null, amount, fee, 'failed', memo, null, () => {});
-                return res.status(500).json({ error: result.error || 'Deposit to FormBank pool failed' });
+                return res.status(500).json({ error: result.error || `Deposit to ${CHECK_FUNDS_LABEL} failed` });
             }
             createCheck(senderId, null, amount, fee, 'uncashed', memo, null, (err, row) => {
                 if (err) {
@@ -1171,7 +1162,7 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
                     fee,
                     payout,
                     message: isFormBank
-                        ? 'Blank check created (FormBank pool).'
+                        ? `Blank check created (${CHECK_FUNDS_LABEL}).`
                         : `Charged ${chargeTotal} digipogs (covers Formbar tax on both legs + FormBank's 5% fee of ${fee}). Receiver will net ${amount}.`
                 });
             });
@@ -1179,15 +1170,15 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
         return;
     }
 
-    // Specific receiver: charge the pool enough, then pay receiver so they net 100% of amount.
+    // Specific receiver: charge FormBank enough, then pay receiver so they net 100% of amount.
     fundThen((result1) => {
         if (!result1.success) {
             createCheck(senderId, receiverId, amount, fee, 'failed', memo, null, () => {});
-            return res.status(500).json({ error: result1.error || 'Deposit to FormBank pool failed' });
+            return res.status(500).json({ error: result1.error || `Deposit to ${CHECK_FUNDS_LABEL} failed` });
         }
         formbarApi.transferDigipogs(
             socket,
-            CHECK_POOL,
+            CHECK_FUNDS,
             receiverId,
             payout,
             memoLabel,
@@ -1196,7 +1187,7 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
             if (!result2.success) {
                 createCheck(senderId, receiverId, amount, fee, 'failed', memo, null, () => {});
                 return res.status(500).json({
-                    error: result2.error || 'FormBank pool payout to receiver failed. Deposit may already be in the pool — contact support.'
+                    error: result2.error || `${CHECK_FUNDS_LABEL} payout to receiver failed. Deposit may already be at FormBank — contact support.`
                 });
             }
             createCheck(senderId, receiverId, amount, fee, 'completed', memo, null, (err, row) => {
@@ -1210,8 +1201,8 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
                     fee,
                     payout,
                     message: isFormBank
-                        ? `Paid ${payout} digipogs from the FormBank pool so receiver nets ${amount}.`
-                        : `Charged ${chargeTotal}; FormBank pool paid ${payout} (receiver nets ${amount}); FormBank keeps ~${fee} (5%).`
+                        ? `Paid ${payout} digipogs from ${CHECK_FUNDS_LABEL} so receiver nets ${amount}.`
+                        : `Charged ${chargeTotal}; ${CHECK_FUNDS_LABEL} paid ${payout} (receiver nets ${amount}); FormBank keeps ~${fee} (5%).`
                 });
             });
         });
@@ -1227,24 +1218,10 @@ const socket = io(AUTH_URL, {
 
 socket.on('connect', () => {
     console.log('Connected to auth server');
-    socket.emit('getActiveClass');
 });
 
 socket.on('disconnect', () => {
     console.log('Disconnected from auth server');
-});
-
-socket.on('setClass', (classData) => {
-    console.log('Received class data:', classData);
-    socket.emit('classUpdate');
-});
-
-socket.on('classUpdate', (classroomData) => {
-    console.log(`Classroom id: ${classroomData.id}, Name: ${classroomData.className}, Active: ${classroomData.isActive}`);
-    console.log(`Response: ${classroomData.poll.totalResponses} / ${classroomData.poll.totalResponders}`);
-    console.log(classroomData.poll.responses);
-    
-    
 });
 
 // Debug: Log all socket events to help identify transfer responses
@@ -1256,7 +1233,7 @@ if (process.env.DEBUG_SOCKET === 'true') {
     };
     
     socket.onAny((event, ...args) => {
-        if (!['connect', 'disconnect', 'setClass', 'classUpdate'].includes(event)) {
+        if (!['connect', 'disconnect'].includes(event)) {
             console.log(`[SOCKET EVENT] ${event}`, args);
         }
     });
@@ -1266,9 +1243,9 @@ if (process.env.DEBUG_SOCKET === 'true') {
 // Start server
 app.listen(PORT, () => {
     console.log(`Server is running at http://localhost:${PORT}`);
-    if (!CHECK_POOL) {
-        console.warn('POOL_ID is not set (or is 0). Check deposits/payouts will fail until it is a Formbar pool ID.');
-    } else {
+    if (USE_CHECK_POOL) {
         console.log(`Checks will go through Formbar pool ${POOL_ID}`);
+    } else {
+        console.log(`POOL_ID is blank; checks will go through lender user ${LENDER_USER_ID}`);
     }
 });
