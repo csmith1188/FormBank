@@ -362,6 +362,11 @@ function getChecksForUser(userId, callback) {
     );
 }
 
+/** All checks system-wide (admin). */
+function getAllChecks(callback) {
+    db.all('SELECT * FROM checks ORDER BY created_at DESC', [], callback);
+}
+
 function getCheckById(id, callback) {
     db.get('SELECT * FROM checks WHERE id = ?', [id], callback);
 }
@@ -495,14 +500,22 @@ app.get('/logout', (req, res) => {
 });
 
 // Admin routes (default user only)
-app.get('/admin', isAuthenticated, (req, res) => {
+function requireAdmin(req, res) {
     const userId = req.session.userId;
     if (!userId) {
-        return res.status(400).send('User ID not found in session');
+        res.status(400).send('User ID not found in session');
+        return null;
     }
     if (userId !== LENDER_USER_ID) {
-        return res.status(403).send('Admin panel is only available to the default user.');
+        res.status(403).send('Admin panel is only available to the default user.');
+        return null;
     }
+    return userId;
+}
+
+app.get('/admin', isAuthenticated, (req, res) => {
+    const userId = requireAdmin(req, res);
+    if (!userId) return;
 
     db.all(
         'SELECT cl.borrower_formbar_user_id AS user_id, cl.current_limit, COALESCE(cb.credit_balance, 0) AS credit_balance ' +
@@ -528,6 +541,44 @@ app.get('/admin', isAuthenticated, (req, res) => {
             });
         }
     );
+});
+
+app.get('/admin/checks', isAuthenticated, (req, res) => {
+    const userId = requireAdmin(req, res);
+    if (!userId) return;
+
+    getAllChecks((err, rows) => {
+        if (err) {
+            console.error('Error loading admin checks:', err);
+            return res.status(500).send('Error loading checks');
+        }
+        const checks = (rows || []).map((c) => {
+            const isFormBankSender = c.sender_formbar_user_id === LENDER_USER_ID;
+            const senderPaid = (c.status === 'failed')
+                ? 0
+                : (isFormBankSender ? 0 : checkChargeToFormBank(c.amount));
+            const receiverGot = (c.status === 'completed') ? c.amount : 0;
+            return {
+                ...c,
+                sender_paid: senderPaid,
+                receiver_received: receiverGot
+            };
+        });
+        const ids = [];
+        checks.forEach((c) => {
+            ids.push(c.sender_formbar_user_id, c.receiver_formbar_user_id);
+        });
+        ids.push(userId);
+        resolveUserNames(ids).then((userNames) => {
+            res.render('admin-checks', {
+                user: req.session.user,
+                userId,
+                isAdmin: true,
+                checks,
+                userNames
+            });
+        });
+    });
 });
 
 // Credit routes
@@ -1042,9 +1093,10 @@ app.get('/checks/:id', (req, res, next) => {
         const hasReceiver = check.receiver_formbar_user_id != null;
         const isReceiver = hasReceiver && check.receiver_formbar_user_id === userId;
         const isUncashed = check.status === 'uncashed' && !hasReceiver;
+        const isAdmin = userId === LENDER_USER_ID;
 
         if (isUncashed) {
-            if (isSender) {
+            if (isSender || isAdmin) {
                 renderCheckDetail(req, res, check, userId);
                 return;
             }
@@ -1070,7 +1122,7 @@ app.get('/checks/:id', (req, res, next) => {
             return;
         }
 
-        if (!isSender && !isReceiver) {
+        if (!isSender && !isReceiver && !isAdmin) {
             return res.status(403).send('You do not have permission to view this check');
         }
         renderCheckDetail(req, res, check, userId);
