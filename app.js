@@ -85,7 +85,7 @@ const API_KEY = process.env.API_KEY || 'your_api_key';
 const LENDER_USER_ID = parseInt(process.env.LENDER_USER_ID) || 1;
 const LENDER_PIN = parseInt(process.env.LENDER_PIN) || 3639; // PIN must be a number per Formbar docs
 /** Formbar user ID for eBank analytics (transaction history source). */
-const EBANK_USER_ID = Math.max(1, parseInt(process.env.EBANK_USER_ID, 10) || 57);
+const EBANK_USER_ID = Math.max(1, parseInt(process.env.EBANK_USER_ID, 10) || 28);
 /** Formbar digipog pool for check deposits/payouts. Blank/0 falls back to the lender user. */
 const POOL_ID = parseInt(process.env.POOL_ID, 10);
 const USE_CHECK_POOL = Number.isInteger(POOL_ID) && POOL_ID > 0;
