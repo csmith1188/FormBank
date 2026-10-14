@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FormBank - Borrower Profile</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #2E7D32 0%, #1B5E20 50%, #0D3D10 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1100px; margin: 0 auto; }
+        .header, .section {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            padding: 20px 25px;
+        }
+        .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+        .header h1 { color: #333; }
+        .nav-links a { color: #2E7D32; text-decoration: none; margin-left: 16px; font-weight: 500; }
+        .section h2 { color: #333; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 2px solid #2E7D32; }
+        .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+        .card { background: #f8f9fa; border-left: 4px solid #2E7D32; padding: 12px; border-radius: 6px; }
+        .card .label { font-size: 12px; color: #666; }
+        .card .value { font-size: 20px; font-weight: 700; margin-top: 4px; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th, td { padding: 8px 10px; border-bottom: 1px solid #e0e0e0; text-align: left; }
+        th { background: #f8f9fa; }
+        .muted { color: #888; font-size: 13px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>Borrower profile</h1>
+                <p><%- formbarUserLink(profile.userId, userNames) %></p>
+            </div>
+            <div class="nav-links">
+                <a href="/admin/analytics">Analytics</a>
+                <a href="/admin">Admin</a>
+                <a href="/logout">Logout</a>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Summary</h2>
+            <div class="cards">
+                <div class="card"><div class="label">Credit limit</div><div class="value"><%= profile.creditLimit != null ? profile.creditLimit : '—' %></div></div>
+                <div class="card"><div class="label">Limit increases</div><div class="value"><%= profile.paidOffCount %></div></div>
+                <div class="card"><div class="label">Outstanding</div><div class="value"><%= profile.outstanding %></div></div>
+                <div class="card"><div class="label">Total paid</div><div class="value"><%= profile.totalPaid %></div></div>
+                <div class="card"><div class="label">Interest collected</div><div class="value"><%= profile.interestCollected %></div></div>
+                <div class="card"><div class="label">Utilization</div><div class="value"><%= (profile.utilization * 100).toFixed(1) %>%</div></div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Lending history</h2>
+            <% if (profile.loans && profile.loans.length) { %>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th><th>Principal</th><th>Owed</th><th>Paid</th><th>Status</th><th>Created</th><th>Paid at</th>
+                    </tr>
+                </thead>
+                <tbody>
+                <% profile.loans.forEach(function(l) { %>
+                    <tr>
+                        <td><%= l.id %></td>
+                        <td><%= l.principal %></td>
+                        <td><%= l.amount_owed %></td>
+                        <td><%= l.amount_paid %></td>
+                        <td><%= l.status %></td>
+                        <td><%= l.created_at %></td>
+                        <td><%= l.paid_at || '—' %></td>
+                    </tr>
+                <% }); %>
+                </tbody>
+            </table>
+            <% } else { %>
+            <p class="muted">No loans.</p>
+            <% } %>
+        </div>
+
+        <div class="section">
+            <h2>Ledger activity</h2>
+            <% if (profile.ledger && profile.ledger.length) { %>
+            <table>
+                <thead>
+                    <tr>
+                        <th>When</th><th>Type</th><th>Status</th><th>Gross</th><th>Principal</th><th>Interest</th><th>Fee</th><th>Tax</th>
+                    </tr>
+                </thead>
+                <tbody>
+                <% profile.ledger.forEach(function(t) { %>
+                    <tr>
+                        <td><%= t.created_at %></td>
+                        <td><%= t.type %></td>
+                        <td><%= t.status %></td>
+                        <td><%= t.gross_transfer_amount %></td>
+                        <td><%= t.principal_component %></td>
+                        <td><%= t.interest_component %></td>
+                        <td><%= t.fee_amount %></td>
+                        <td><%= t.tax_amount %></td>
+                    </tr>
+                <% }); %>
+                </tbody>
+            </table>
+            <% } else { %>
+            <p class="muted">No ledger rows for this user.</p>
+            <% } %>
+        </div>
+    </div>
+</body>
+</html>

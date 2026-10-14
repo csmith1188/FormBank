@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "app.js",
   "scripts": {
-    "test": "nodemon app.js",
+    "test": "node --test test/**/*.test.js",
     "start": "node app.js",
     "init-db": "node db/init-db.js"
   },

@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FormBank - Admin Analytics</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #2E7D32 0%, #1B5E20 50%, #0D3D10 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1280px; margin: 0 auto; }
+        .header, .section, .filters {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .header {
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        .header h1 { color: #333; margin-bottom: 5px; }
+        .header p { color: #666; font-size: 14px; }
+        .nav-links a {
+            color: #2E7D32;
+            text-decoration: none;
+            margin-left: 16px;
+            font-weight: 500;
+        }
+        .nav-links a:hover { color: #1B5E20; text-decoration: underline; }
+        .filters { padding: 16px 20px; }
+        .filters form { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+        .filters label { font-size: 12px; color: #555; display: block; margin-bottom: 4px; }
+        .filters select, .filters input {
+            padding: 8px 10px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .filters button, .export-links a {
+            background: #2E7D32;
+            color: white;
+            border: none;
+            padding: 8px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 14px;
+            display: inline-block;
+        }
+        .filters button:hover, .export-links a:hover { background: #1B5E20; }
+        .export-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+        .section { padding: 25px; }
+        .section h2 {
+            color: #333;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #2E7D32;
+        }
+        .section h3 { color: #444; margin: 18px 0 10px; font-size: 16px; }
+        .note { font-size: 13px; color: #666; margin-bottom: 12px; }
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        .card {
+            background: #f8f9fa;
+            border-left: 4px solid #2E7D32;
+            padding: 14px;
+            border-radius: 6px;
+        }
+        .card.liability { border-left-color: #E65100; }
+        .card.revenue { border-left-color: #1565C0; }
+        .card.expense { border-left-color: #C62828; }
+        .card.unverified { border-left-color: #757575; }
+        .card .label { font-size: 12px; color: #666; margin-bottom: 6px; }
+        .card .value { font-size: 22px; font-weight: 700; color: #222; }
+        .card .sub { font-size: 11px; color: #888; margin-top: 4px; }
+        .charts {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 16px;
+        }
+        .chart-box { position: relative; height: 260px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+        th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #e0e0e0; }
+        th { background: #f8f9fa; font-weight: 600; }
+        tr:hover { background: #f1f8e9; }
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .badge-info { background: #E3F2FD; color: #0D47A1; }
+        .badge-warn { background: #FFEBEE; color: #B71C1C; }
+        .badge-ok { background: #E8F5E9; color: #1B5E20; }
+        a.link { color: #2E7D32; font-weight: 500; text-decoration: none; }
+        a.link:hover { text-decoration: underline; }
+        .empty { color: #888; font-size: 14px; padding: 12px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>Admin Analytics</h1>
+                <p>Logged in as <strong><%= user %></strong> · Range: <%= dateRange.label %></p>
+            </div>
+            <div class="nav-links">
+                <a href="/admin">Credit Limits</a>
+                <a href="/admin/checks">All Checks</a>
+                <a href="/admin/analytics">Analytics</a>
+                <a href="/credit">Credit</a>
+                <a href="/logout">Logout</a>
+            </div>
+        </div>
+
+        <div class="filters">
+            <form method="get" action="/admin/analytics">
+                <div>
+                    <label>Range</label>
+                    <select name="range" id="rangeSelect">
+                        <option value="today" <%= dateRange.range === 'today' ? 'selected' : '' %>>Today</option>
+                        <option value="7d" <%= dateRange.range === '7d' ? 'selected' : '' %>>7 days</option>
+                        <option value="30d" <%= dateRange.range === '30d' ? 'selected' : '' %>>30 days</option>
+                        <option value="90d" <%= dateRange.range === '90d' ? 'selected' : '' %>>90 days</option>
+                        <option value="all" <%= dateRange.range === 'all' ? 'selected' : '' %>>All time</option>
+                        <option value="custom" <%= dateRange.range === 'custom' ? 'selected' : '' %>>Custom</option>
+                    </select>
+                </div>
+                <div>
+                    <label>From</label>
+                    <input type="date" name="from" value="<%= dateRange.from ? dateRange.from.slice(0,10) : '' %>">
+                </div>
+                <div>
+                    <label>To</label>
+                    <input type="date" name="to" value="<%= dateRange.to ? dateRange.to.slice(0,10) : '' %>">
+                </div>
+                <div>
+                    <label>P&amp;L bucket</label>
+                    <select name="granularity">
+                        <option value="day" <%= granularity === 'day' ? 'selected' : '' %>>Day</option>
+                        <option value="week" <%= granularity === 'week' ? 'selected' : '' %>>Week</option>
+                        <option value="month" <%= granularity === 'month' ? 'selected' : '' %>>Month</option>
+                        <option value="lifetime" <%= granularity === 'lifetime' ? 'selected' : '' %>>Lifetime</option>
+                    </select>
+                </div>
+                <button type="submit">Apply</button>
+            </form>
+            <div class="export-links">
+                <a href="/admin/analytics/export/transactions.csv?range=<%= dateRange.range %>">Export transactions</a>
+                <a href="/admin/analytics/export/lending.csv">Export lending</a>
+                <a href="/admin/analytics/export/checks.csv">Export checks</a>
+                <a href="/admin/analytics/export/summary.csv?range=<%= dateRange.range %>">Export summary</a>
+            </div>
+            <p class="note" style="margin-top:10px;"><%= ledgerCoverageNote %></p>
+        </div>
+
+        <div class="section">
+            <h2>Financial position</h2>
+            <h3>Assets</h3>
+            <div class="cards">
+                <div class="card">
+                    <div class="label">Outstanding loan principal</div>
+                    <div class="value"><%= summary.assets.outstandingPrincipal %></div>
+                </div>
+                <div class="card">
+                    <div class="label">Outstanding balances (incl. interest)</div>
+                    <div class="value"><%= summary.assets.outstandingBalances %></div>
+                </div>
+                <div class="card unverified">
+                    <div class="label">Available funds</div>
+                    <div class="value" style="font-size:14px;line-height:1.3;"><%= summary.assets.availableFundsLabel %></div>
+                </div>
+            </div>
+            <h3>Liabilities</h3>
+            <div class="cards">
+                <div class="card liability">
+                    <div class="label">Borrower credit balances</div>
+                    <div class="value"><%= summary.liabilities.borrowerCreditBalances %></div>
+                    <div class="sub"><%= summary.liabilities.borrowerCreditBalancesNote %></div>
+                </div>
+                <div class="card liability">
+                    <div class="label">Uncashed / unpaid check obligations</div>
+                    <div class="value"><%= summary.liabilities.uncashedObligations %></div>
+                    <div class="sub"><%= summary.liabilities.uncashedCount %> checks</div>
+                </div>
+                <div class="card liability">
+                    <div class="label">Unresolved transactions</div>
+                    <div class="value"><%= summary.liabilities.unresolvedCount %></div>
+                    <div class="sub">Notional <%= summary.liabilities.unresolvedNotional %></div>
+                </div>
+            </div>
+            <h3>Revenue &amp; expenses (selected range)</h3>
+            <div class="cards">
+                <div class="card revenue">
+                    <div class="label">Interest collected</div>
+                    <div class="value"><%= summary.revenue.interestCollected %></div>
+                </div>
+                <div class="card revenue">
+                    <div class="label">Check fee revenue</div>
+                    <div class="value"><%= summary.revenue.checkFeeRevenue %></div>
+                </div>
+                <div class="card expense">
+                    <div class="label">Formbar transfer taxes</div>
+                    <div class="value"><%= summary.expenses.formbarTaxes %></div>
+                </div>
+                <div class="card">
+                    <div class="label">Net realized P&amp;L</div>
+                    <div class="value"><%= summary.cashFlow.netRealizedProfit %></div>
+                    <div class="sub">Revenue − expenses (excludes escrow)</div>
+                </div>
+                <div class="card">
+                    <div class="label">Loans issued / repaid (range)</div>
+                    <div class="value" style="font-size:16px;"><%= summary.cashFlow.loansIssuedCount %> / <%= summary.cashFlow.repaymentsCount %></div>
+                </div>
+                <div class="card">
+                    <div class="label">Active borrowers / check writers</div>
+                    <div class="value" style="font-size:16px;"><%= summary.activity.activeBorrowers %> / <%= summary.activity.activeCheckWriters %></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Charts</h2>
+            <div class="charts">
+                <div>
+                    <h3>Lending &amp; repayments</h3>
+                    <div class="chart-box"><canvas id="chartLending"></canvas></div>
+                    <p id="emptyLending" class="empty" style="display:none;">No lending data in this range.</p>
+                </div>
+                <div>
+                    <h3>Revenue vs expenses</h3>
+                    <div class="chart-box"><canvas id="chartPnl"></canvas></div>
+                    <p id="emptyPnl" class="empty" style="display:none;">No P&amp;L data in this range.</p>
+                </div>
+                <div>
+                    <h3>Loan status</h3>
+                    <div class="chart-box"><canvas id="chartLoanStatus"></canvas></div>
+                </div>
+                <div>
+                    <h3>Loan age (active only)</h3>
+                    <div class="chart-box"><canvas id="chartLoanAge"></canvas></div>
+                </div>
+                <div>
+                    <h3>Credit limit distribution</h3>
+                    <div class="chart-box"><canvas id="chartCredit"></canvas></div>
+                    <p id="emptyCredit" class="empty" style="display:none;">No credit limit data.</p>
+                </div>
+                <div>
+                    <h3>Check activity</h3>
+                    <div class="chart-box"><canvas id="chartChecks"></canvas></div>
+                    <p id="emptyChecks" class="empty" style="display:none;">No check activity in this range.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Loan analytics</h2>
+            <div class="cards">
+                <div class="card"><div class="label">Issued / active / repaid</div><div class="value" style="font-size:16px;"><%= loans.totalIssued %> / <%= loans.activeCount %> / <%= loans.repaidCount %></div></div>
+                <div class="card"><div class="label">Principal loaned / recovered</div><div class="value" style="font-size:16px;"><%= loans.principalLoaned %> / <%= loans.principalRecovered %></div></div>
+                <div class="card"><div class="label">Interest charged / collected</div><div class="value" style="font-size:16px;"><%= loans.interestCharged %> / <%= loans.interestCollected %></div></div>
+                <div class="card"><div class="label">Avg / median loan size</div><div class="value" style="font-size:16px;"><%= loans.avgLoanSize != null ? loans.avgLoanSize.toFixed(1) : '—' %> / <%= loans.medianLoanSize != null ? loans.medianLoanSize : '—' %></div></div>
+                <div class="card"><div class="label">Avg / median repay days</div><div class="value" style="font-size:16px;"><%= loans.avgRepaymentDays != null ? loans.avgRepaymentDays.toFixed(1) : '—' %> / <%= loans.medianRepaymentDays != null ? Number(loans.medianRepaymentDays).toFixed(1) : '—' %></div></div>
+                <div class="card"><div class="label">Completion / repeat borrow rate</div><div class="value" style="font-size:16px;"><%= loans.completionRate != null ? (loans.completionRate*100).toFixed(1)+'%' : '—' %> / <%= loans.repeatBorrowingRate != null ? (loans.repeatBorrowingRate*100).toFixed(1)+'%' : '—' %></div></div>
+                <div class="card"><div class="label">Partial / full repayments (ledger)</div><div class="value" style="font-size:16px;"><%= loans.partialRepayments %> / <%= loans.fullRepayments %></div></div>
+            </div>
+            <p class="note">Loan age buckets are informational only — FormBank does not define overdue/default.</p>
+        </div>
+
+        <div class="section">
+            <h2>Credit analytics</h2>
+            <p class="note"><%= credit.limitIncreaseNote %></p>
+            <div class="cards">
+                <div class="card"><div class="label">Borrowers with limits</div><div class="value"><%= credit.borrowerCount %></div></div>
+                <div class="card"><div class="label">Avg / median limit</div><div class="value" style="font-size:16px;"><%= credit.avgCreditLimit != null ? credit.avgCreditLimit.toFixed(0) : '—' %> / <%= credit.medianCreditLimit != null ? credit.medianCreditLimit : '—' %></div></div>
+                <div class="card"><div class="label">Ledger increase events</div><div class="value"><%= credit.limitIncreaseEvents %></div></div>
+            </div>
+            <% if (credit.highestLimits && credit.highestLimits.length) { %>
+            <table>
+                <thead><tr><th>Borrower</th><th>Limit</th><th>Increases (proxy)</th><th></th></tr></thead>
+                <tbody>
+                <% credit.highestLimits.forEach(function(u) { %>
+                    <tr>
+                        <td><%- formbarUserLink(u.user_id, userNames) %></td>
+                        <td><%= u.current_limit %></td>
+                        <td><%= u.paid_off_count %></td>
+                        <td><a class="link" href="/admin/analytics/borrowers/<%= u.user_id %>">Profile</a></td>
+                    </tr>
+                <% }); %>
+                </tbody>
+            </table>
+            <% } %>
+            <% if (credit.byTier && credit.byTier.length) { %>
+            <h3>By credit limit tier</h3>
+            <table>
+                <thead><tr><th>Tier</th><th>Borrowers</th><th>Outstanding</th><th>Total repaid</th><th>Avg repay days</th></tr></thead>
+                <tbody>
+                <% credit.byTier.forEach(function(t) { %>
+                    <tr>
+                        <td><%= t.tier %></td>
+                        <td><%= t.borrowers %></td>
+                        <td><%= t.outstanding_debt %></td>
+                        <td><%= t.total_repaid %></td>
+                        <td><%= t.avg_repay_days != null ? Number(t.avg_repay_days).toFixed(1) : '—' %></td>
+                    </tr>
+                <% }); %>
+                </tbody>
+            </table>
+            <% } %>
+        </div>
+
+        <div class="section">
+            <h2>Check analytics</h2>
+            <div class="cards">
+                <div class="card"><div class="label">Written / completed / uncashed</div><div class="value" style="font-size:15px;"><%= checks.totalWritten %> / <%= checks.completedCount %> / <%= checks.uncashedCount %></div></div>
+                <div class="card liability"><div class="label">Funded unpaid</div><div class="value"><%= checks.fundedUnpaidCount %></div></div>
+                <div class="card"><div class="label">Total value / avg / median</div><div class="value" style="font-size:15px;"><%= checks.totalValue %> / <%= checks.avgCheckValue != null ? checks.avgCheckValue.toFixed(0) : '—' %> / <%= checks.medianCheckValue != null ? checks.medianCheckValue : '—' %></div></div>
+                <div class="card revenue"><div class="label">Fees earned</div><div class="value"><%= checks.feesEarned %></div></div>
+                <div class="card expense"><div class="label">Deposit / payout taxes</div><div class="value" style="font-size:15px;"><%= checks.depositTaxes %> / <%= checks.payoutTaxes %></div></div>
+                <div class="card"><div class="label">Deposits / payouts completed</div><div class="value" style="font-size:15px;"><%= checks.depositsCompleted %> / <%= checks.payoutsCompleted %></div></div>
+                <div class="card"><div class="label">Avg days to redeem</div><div class="value"><%= checks.avgDaysToRedeem != null ? checks.avgDaysToRedeem.toFixed(1) : '—' %></div></div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>User &amp; economic activity</h2>
+            <p class="note"><%= users.usernameCacheNote %> (cache size: <%= users.usernameCacheCount %>).</p>
+            <div class="cards">
+                <div class="card"><div class="label">Unique financial users</div><div class="value"><%= users.totalUniqueFinancialUsers %></div></div>
+                <div class="card"><div class="label">Active in range</div><div class="value"><%= users.activeUsersInRange %></div></div>
+                <div class="card"><div class="label">New / returning</div><div class="value" style="font-size:16px;"><%= users.newParticipants %> / <%= users.returningParticipants %></div></div>
+                <div class="card"><div class="label">Txs per active user</div><div class="value"><%= users.transactionsPerActiveUser.toFixed(2) %></div></div>
+                <div class="card"><div class="label">Dual (lending + checks)</div><div class="value"><%= users.dualParticipants %></div></div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Risk &amp; anomalies</h2>
+            <p class="note">Rule-based alerts. <span class="badge badge-warn">Needs reconciliation</span> vs <span class="badge badge-info">Informational</span>.</p>
+            <div class="cards">
+                <div class="card"><div class="label">Total outstanding</div><div class="value"><%= risk.totalOutstanding %></div></div>
+                <div class="card"><div class="label">Top-5 debt concentration</div><div class="value"><%= (risk.debtConcentrationTop5 * 100).toFixed(1) %>%</div></div>
+            </div>
+            <% if (risk.topOutstandingBorrowers && risk.topOutstandingBorrowers.length) { %>
+            <table>
+                <thead><tr><th>Borrower</th><th>Outstanding</th><th></th></tr></thead>
+                <tbody>
+                <% risk.topOutstandingBorrowers.forEach(function(b) { %>
+                    <tr>
+                        <td><%- formbarUserLink(b.user_id, userNames) %></td>
+                        <td><%= b.outstanding %></td>
+                        <td><a class="link" href="/admin/analytics/borrowers/<%= b.user_id %>">Profile</a></td>
+                    </tr>
+                <% }); %>
+                </tbody>
+            </table>
+            <% } %>
+            <h3>Alerts</h3>
+            <% if (risk.alerts && risk.alerts.length) { %>
+            <table>
+                <thead><tr><th>Severity</th><th>Kind</th><th>Message</th></tr></thead>
+                <tbody>
+                <% risk.alerts.forEach(function(a) { %>
+                    <tr>
+                        <td><span class="badge <%= a.severity === 'needs_reconciliation' ? 'badge-warn' : 'badge-info' %>"><%= a.severity %></span></td>
+                        <td><%= a.kind %></td>
+                        <td><%= a.message %></td>
+                    </tr>
+                <% }); %>
+                </tbody>
+            </table>
+            <% } else { %>
+            <p class="empty">No risk alerts.</p>
+            <% } %>
+        </div>
+
+        <div class="section">
+            <h2>Reconciliation queue</h2>
+            <p class="note"><%= reconciliation.needsReconciliation %> need attention · <%= reconciliation.informational %> informational</p>
+            <% if (reconciliation.alerts && reconciliation.alerts.length) { %>
+            <table>
+                <thead><tr><th>Severity</th><th>Kind</th><th>Message</th></tr></thead>
+                <tbody>
+                <% reconciliation.alerts.slice(0, 50).forEach(function(a) { %>
+                    <tr>
+                        <td><span class="badge <%= a.severity === 'needs_reconciliation' ? 'badge-warn' : 'badge-info' %>"><%= a.severity %></span></td>
+                        <td><%= a.kind %></td>
+                        <td><%= a.message %></td>
+                    </tr>
+                <% }); %>
+                </tbody>
+            </table>
+            <% } else { %>
+            <p class="empty">No reconciliation items.</p>
+            <% } %>
+        </div>
+
+        <div class="section">
+            <h2>Daily financial snapshots</h2>
+            <% if (snapshots && snapshots.length) { %>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Outstanding principal</th>
+                        <th>Outstanding balances</th>
+                        <th>Uncashed</th>
+                        <th>Interest</th>
+                        <th>Fees</th>
+                        <th>Taxes</th>
+                        <th>Unresolved</th>
+                    </tr>
+                </thead>
+                <tbody>
+                <% snapshots.forEach(function(s) { %>
+                    <tr>
+                        <td><%= s.snapshot_date %></td>
+                        <td><%= s.outstanding_principal %></td>
+                        <td><%= s.outstanding_balances %></td>
+                        <td><%= s.uncashed_obligations %></td>
+                        <td><%= s.interest_collected %></td>
+                        <td><%= s.check_fees_collected %></td>
+                        <td><%= s.formbar_taxes %></td>
+                        <td><%= s.unresolved_count %></td>
+                    </tr>
+                <% }); %>
+                </tbody>
+            </table>
+            <% } else { %>
+            <p class="empty">No snapshots yet.</p>
+            <% } %>
+        </div>
+    </div>
+
+    <script>
+        const loansIssued = <%- JSON.stringify(loans.issuedOverTime || []) %>;
+        const loansRepaid = <%- JSON.stringify(loans.repaymentsOverTime || []) %>;
+        const pnlSeries = <%- JSON.stringify(pnl.series || []) %>;
+        const ageDist = <%- JSON.stringify(loans.ageDistribution || {}) %>;
+        const creditDist = <%- JSON.stringify(credit.distribution || {}) %>;
+        const checkActivity = <%- JSON.stringify(checks.activityOverTime || []) %>;
+
+        function mergeDays(a, b) {
+            const map = {};
+            a.forEach(r => { map[r.day] = map[r.day] || { day: r.day, issued: 0, repaid: 0 }; map[r.day].issued = r.amount; });
+            b.forEach(r => { map[r.day] = map[r.day] || { day: r.day, issued: 0, repaid: 0 }; map[r.day].repaid = r.amount; });
+            return Object.values(map).sort((x, y) => x.day < y.day ? -1 : 1);
+        }
+
+        const green = '#2E7D32';
+        const orange = '#E65100';
+        const blue = '#1565C0';
+        const red = '#C62828';
+
+        (function() {
+            const merged = mergeDays(loansIssued, loansRepaid);
+            if (!merged.length) {
+                document.getElementById('emptyLending').style.display = 'block';
+                document.getElementById('chartLending').style.display = 'none';
+            } else {
+                new Chart(document.getElementById('chartLending'), {
+                    type: 'line',
+                    data: {
+                        labels: merged.map(r => r.day),
+                        datasets: [
+                            { label: 'Issued', data: merged.map(r => r.issued), borderColor: green, tension: 0.2 },
+                            { label: 'Repaid', data: merged.map(r => r.repaid), borderColor: blue, tension: 0.2 }
+                        ]
+                    },
+                    options: { responsive: true, maintainAspectRatio: false }
+                });
+            }
+        })();
+
+        (function() {
+            if (!pnlSeries.length) {
+                document.getElementById('emptyPnl').style.display = 'block';
+                document.getElementById('chartPnl').style.display = 'none';
+            } else {
+                new Chart(document.getElementById('chartPnl'), {
+                    type: 'bar',
+                    data: {
+                        labels: pnlSeries.map(r => r.period),
+                        datasets: [
+                            { label: 'Revenue', data: pnlSeries.map(r => r.revenue), backgroundColor: blue },
+                            { label: 'Expenses', data: pnlSeries.map(r => r.expenses), backgroundColor: red }
+                        ]
+                    },
+                    options: { responsive: true, maintainAspectRatio: false }
+                });
+            }
+        })();
+
+        new Chart(document.getElementById('chartLoanStatus'), {
+            type: 'doughnut',
+            data: {
+                labels: ['Active', 'Repaid'],
+                datasets: [{
+                    data: [<%= loans.activeCount %>, <%= loans.repaidCount %>],
+                    backgroundColor: [orange, green]
+                }]
+            },
+            options: { responsive: true, maintainAspectRatio: false }
+        });
+
+        new Chart(document.getElementById('chartLoanAge'), {
+            type: 'bar',
+            data: {
+                labels: ['0–7', '8–14', '15–30', '30+'],
+                datasets: [{
+                    label: 'Active loans',
+                    data: [ageDist['0-7'] || 0, ageDist['8-14'] || 0, ageDist['15-30'] || 0, ageDist['30+'] || 0],
+                    backgroundColor: green
+                }]
+            },
+            options: { responsive: true, maintainAspectRatio: false }
+        });
+
+        (function() {
+            const labels = Object.keys(creditDist);
+            if (!labels.length) {
+                document.getElementById('emptyCredit').style.display = 'block';
+                document.getElementById('chartCredit').style.display = 'none';
+            } else {
+                new Chart(document.getElementById('chartCredit'), {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{ label: 'Borrowers', data: labels.map(k => creditDist[k]), backgroundColor: green }]
+                    },
+                    options: { responsive: true, maintainAspectRatio: false }
+                });
+            }
+        })();
+
+        (function() {
+            if (!checkActivity.length) {
+                document.getElementById('emptyChecks').style.display = 'block';
+                document.getElementById('chartChecks').style.display = 'none';
+            } else {
+                new Chart(document.getElementById('chartChecks'), {
+                    type: 'line',
+                    data: {
+                        labels: checkActivity.map(r => r.day),
+                        datasets: [{
+                            label: 'Check volume',
+                            data: checkActivity.map(r => r.amount),
+                            borderColor: orange,
+                            tension: 0.2
+                        }]
+                    },
+                    options: { responsive: true, maintainAspectRatio: false }
+                });
+            }
+        })();
+    </script>
+</body>
+</html>

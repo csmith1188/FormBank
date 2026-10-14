@@ -9,7 +9,13 @@ const sqlite3 = require('sqlite3').verbose();
 const SQLiteStore = require('connect-sqlite3')(session);
 const formbarApi = require('./formbarApi');
 const QRCode = require('qrcode');
+const accounting = require('./lib/accounting');
+const { createLedger } = require('./lib/ledger');
+const { migrate } = require('./db/migrate');
+const { getReconciliationReport } = require('./lib/reconcile');
+const analytics = require('./lib/analytics');
 
+let ledger = null;
 
 // Database setup
 const db = new sqlite3.Database('./db/database.db', (err) => {
@@ -56,6 +62,14 @@ const db = new sqlite3.Database('./db/database.db', (err) => {
                 });
             }
         );
+        migrate(db)
+            .then(() => {
+                ledger = createLedger(db);
+                console.log('Database migrations applied');
+            })
+            .catch((migErr) => {
+                console.error('Migration error:', migErr);
+            });
     }
 });
 
@@ -138,21 +152,6 @@ function getCreditLimit(userId, callback) {
     });
 }
 
-function getCreditBalance(userId, callback) {
-    db.get('SELECT credit_balance FROM credit_balances WHERE borrower_formbar_user_id = ?', [userId], (err, row) => {
-        if (err) return callback(err, null);
-        if (!row) {
-            // Initialize with zero balance
-            db.run('INSERT INTO credit_balances (borrower_formbar_user_id, credit_balance) VALUES (?, 0)', [userId], function(err) {
-                if (err) return callback(err, null);
-                callback(null, { credit_balance: 0 });
-            });
-        } else {
-            callback(null, row);
-        }
-    });
-}
-
 function getActiveLoan(userId, callback) {
     db.get('SELECT * FROM credit_loans WHERE borrower_formbar_user_id = ? AND status = ?', [userId, 'active'], callback);
 }
@@ -162,8 +161,8 @@ function getLoanHistory(userId, callback) {
 }
 
 function createLoan(userId, principal, callback) {
-    const interestRate = 0.20;
-    const amountOwed = Math.ceil(principal * 1.20);
+    const interestRate = accounting.LOAN_INTEREST_RATE;
+    const amountOwed = accounting.loanAmountOwed(principal);
     db.run(
         'INSERT INTO credit_loans (borrower_formbar_user_id, principal, interest_rate, amount_owed, amount_paid, status) VALUES (?, ?, ?, ?, 0, ?)',
         [userId, principal, interestRate, amountOwed, 'active'],
@@ -201,7 +200,6 @@ function updateLoanPayment(loanId, additionalPayment, callback) {
 // Credit limit starts at CREDIT_LIMIT_STEP and increases by +CREDIT_LIMIT_STEP whenever
 // the user's total repayments reach their current credit limit.
 function updateCreditLimitFromRepayments(userId, callback) {
-    // Ensure a credit_limits row exists and get current values
     getCreditLimit(userId, (err, limitRow) => {
         if (err) return callback(err, null);
 
@@ -215,41 +213,50 @@ function updateCreditLimitFromRepayments(userId, callback) {
                     ? row.total_repaid
                     : 0;
 
-                let currentLimit = limitRow.current_limit;
-                let increaseCount = limitRow.paid_off_count || 0;
-                let increments = 0;
+                const progress = accounting.computeCreditLimitProgress(
+                    CREDIT_LIMIT_STEP,
+                    limitRow.current_limit,
+                    limitRow.paid_off_count || 0,
+                    totalRepaid
+                );
 
-                function thresholdForIndex(i) {
-                    // i = 0 → first increase at STEP
-                    // i = 1 → second increase at STEP + 2*STEP, etc. (triangular)
-                    const n = i + 1;
-                    return CREDIT_LIMIT_STEP * (n * (n + 1) / 2);
-                }
-
-                // Apply as many increases as total repayments allow
-                while (totalRepaid >= thresholdForIndex(increaseCount)) {
-                    currentLimit += CREDIT_LIMIT_STEP;
-                    increaseCount += 1;
-                    increments += 1;
-                }
-
-                if (increments === 0) {
+                if (progress.increments === 0) {
                     return callback(null, {
                         increased: false,
                         increments: 0,
-                        newLimit: currentLimit
+                        newLimit: progress.newLimit
                     });
                 }
 
+                const previousLimit = limitRow.current_limit;
                 db.run(
                     'UPDATE credit_limits SET current_limit = ?, paid_off_count = ? WHERE borrower_formbar_user_id = ?',
-                    [currentLimit, increaseCount, userId],
+                    [progress.newLimit, progress.newIncreaseCount, userId],
                     (err) => {
                         if (err) return callback(err, null);
+                        if (ledger) {
+                            const bump = progress.newLimit - previousLimit;
+                            ledger.insertCompleted({
+                                idempotency_key: `credit_limit:${userId}:${progress.newIncreaseCount}`,
+                                type: 'credit_limit_change',
+                                actor_formbar_user_id: userId,
+                                requested_amount: bump,
+                                gross_transfer_amount: 0,
+                                net_amount: bump,
+                                metadata: {
+                                    previousLimit,
+                                    newLimit: progress.newLimit,
+                                    increments: progress.increments,
+                                    totalRepaid
+                                }
+                            }).catch((ledgerErr) => {
+                                console.error('Failed to record credit_limit_change:', ledgerErr.message);
+                            });
+                        }
                         callback(null, {
                             increased: true,
-                            increments,
-                            newLimit: currentLimit
+                            increments: progress.increments,
+                            newLimit: progress.newLimit
                         });
                     }
                 );
@@ -258,62 +265,10 @@ function updateCreditLimitFromRepayments(userId, callback) {
     });
 }
 
-function updateCreditBalance(userId, amount, callback) {
-    db.run(
-        'INSERT INTO credit_balances (borrower_formbar_user_id, credit_balance) VALUES (?, ?) ON CONFLICT(borrower_formbar_user_id) DO UPDATE SET credit_balance = credit_balance + ?',
-        [userId, amount, amount],
-        callback
-    );
-}
-
-function deductCreditBalance(userId, amount, callback) {
-    db.run(
-        'UPDATE credit_balances SET credit_balance = credit_balance - ? WHERE borrower_formbar_user_id = ? AND credit_balance >= ?',
-        [amount, userId, amount],
-        function(err) {
-            if (err) return callback(err);
-            callback(null, this.changes > 0);
-        }
-    );
-}
-
-// Check (write-check) database helpers
-/** Recipient keeps this fraction after Formbar's 10% transfer tax. */
-const FORMBAR_KEEP_RATE = 0.9;
-/** FormBank's target net take as a fraction of the check amount. */
-const FORMBANK_FEE_RATE = 0.05;
-
-/**
- * Gross digipogs to send so the recipient nets at least `netDesired`
- * after Formbar tax (assumes recipient receives floor(sent * 0.9)).
- */
-function sendAmountForNet(netDesired) {
-    const net = Math.max(0, Math.floor(Number(netDesired) || 0));
-    if (net <= 0) return 0;
-    return Math.ceil(net / FORMBAR_KEEP_RATE);
-}
-
-/** FormBank's intended net fee (5% of check amount). */
-function calcCheckFee(amount) {
-    const a = Math.max(0, Math.floor(Number(amount) || 0));
-    return Math.ceil(a * FORMBANK_FEE_RATE);
-}
-
-/** Gross FormBank → receiver so they net the full check amount. */
-function checkPayoutFromFormBank(amount) {
-    return sendAmountForNet(amount);
-}
-
-/**
- * Gross sender → FormBank so that after tax FormBank can:
- * 1) pay the receiver (full net amount), and
- * 2) keep ~5% of the check amount.
- */
-function checkChargeToFormBank(amount) {
-    const payout = checkPayoutFromFormBank(amount);
-    const fee = calcCheckFee(amount);
-    return sendAmountForNet(payout + fee);
-}
+const sendAmountForNet = accounting.sendAmountForNet;
+const calcCheckFee = accounting.calcCheckFee;
+const checkPayoutFromFormBank = accounting.checkPayoutFromFormBank;
+const checkChargeToFormBank = accounting.checkChargeToFormBank;
 
 /**
  * Pay a funded check from FormBank (pool if POOL_ID is set, otherwise the lender user).
@@ -383,7 +338,15 @@ function claimUncashedCheck(checkId, userId, callback) {
 }
 
 function setCheckStatus(checkId, status, callback) {
-    db.run('UPDATE checks SET status = ? WHERE id = ?', [status, checkId], callback);
+    if (status === 'completed') {
+        db.run(
+            'UPDATE checks SET status = ?, cashed_at = COALESCE(cashed_at, CURRENT_TIMESTAMP) WHERE id = ?',
+            [status, checkId],
+            callback
+        );
+    } else {
+        db.run('UPDATE checks SET status = ? WHERE id = ?', [status, checkId], callback);
+    }
 }
 
 /** Top N borrowers by current credit limit. */
@@ -518,9 +481,8 @@ app.get('/admin', isAuthenticated, (req, res) => {
     if (!userId) return;
 
     db.all(
-        'SELECT cl.borrower_formbar_user_id AS user_id, cl.current_limit, COALESCE(cb.credit_balance, 0) AS credit_balance ' +
-        'FROM credit_limits cl ' +
-        'LEFT JOIN credit_balances cb ON cb.borrower_formbar_user_id = cl.borrower_formbar_user_id ' +
+        'SELECT borrower_formbar_user_id AS user_id, current_limit ' +
+        'FROM credit_limits ' +
         'ORDER BY user_id ASC',
         [],
         (err, rows) => {
@@ -543,6 +505,153 @@ app.get('/admin', isAuthenticated, (req, res) => {
     );
 });
 
+app.get('/admin/analytics', isAuthenticated, async (req, res) => {
+    const userId = requireAdmin(req, res);
+    if (!userId) return;
+
+    try {
+        const dateRange = analytics.parseDateRange(req.query);
+        const granularity = ['day', 'week', 'month', 'lifetime'].includes(req.query.granularity)
+            ? req.query.granularity
+            : 'day';
+
+        await analytics.ensureTodaySnapshot(db);
+
+        const [
+            summary,
+            loans,
+            pnl,
+            credit,
+            checks,
+            users,
+            risk,
+            reconciliation,
+            snapshots
+        ] = await Promise.all([
+            analytics.getSummary(db, dateRange),
+            analytics.getLoanAnalytics(db, dateRange),
+            analytics.getProfitAndLoss(db, { ...dateRange, granularity }),
+            analytics.getCreditAnalytics(db, { ...dateRange, creditLimitStep: CREDIT_LIMIT_STEP }),
+            analytics.getCheckAnalytics(db, dateRange),
+            analytics.getUserAnalytics(db, dateRange),
+            analytics.getRiskReport(db),
+            getReconciliationReport(db),
+            analytics.getRecentSnapshots(db, 90)
+        ]);
+
+        const nameIds = [];
+        (credit.highestLimits || []).forEach((u) => nameIds.push(u.user_id));
+        (risk.topOutstandingBorrowers || []).forEach((u) => nameIds.push(u.user_id));
+        (users.topBorrowers || []).forEach((u) => nameIds.push(u.user_id));
+        (users.topCheckUsers || []).forEach((u) => nameIds.push(u.user_id));
+        (checks.topWriters || []).forEach((u) => nameIds.push(u.user_id));
+        (checks.topRecipients || []).forEach((u) => nameIds.push(u.user_id));
+        nameIds.push(userId);
+
+        const userNames = await resolveUserNames(nameIds);
+        res.render('admin-analytics', {
+            user: req.session.user,
+            userId,
+            isAdmin: true,
+            formbarUrl: FORMBAR_URL,
+            dateRange,
+            granularity,
+            summary,
+            loans,
+            pnl,
+            credit,
+            checks,
+            users,
+            risk,
+            reconciliation,
+            snapshots,
+            userNames,
+            ledgerCoverageNote: 'Ledger coverage begins at migration; earlier repayments may be aggregated into a single legacy event per loan.'
+        });
+    } catch (err) {
+        console.error('Error loading analytics:', err);
+        res.status(500).send('Error loading analytics');
+    }
+});
+
+app.get('/admin/analytics/api/summary', isAuthenticated, async (req, res) => {
+    const userId = requireAdmin(req, res);
+    if (!userId) return;
+    try {
+        const dateRange = analytics.parseDateRange(req.query);
+        const summary = await analytics.getSummary(db, dateRange);
+        const loans = await analytics.getLoanAnalytics(db, dateRange);
+        const pnl = await analytics.getProfitAndLoss(db, {
+            ...dateRange,
+            granularity: req.query.granularity || 'day'
+        });
+        res.json({ dateRange, summary, loans, pnl });
+    } catch (err) {
+        console.error('Analytics API error:', err);
+        res.status(500).json({ error: 'Failed to load analytics' });
+    }
+});
+
+app.get('/admin/analytics/borrowers/:formbarUserId', isAuthenticated, async (req, res) => {
+    const userId = requireAdmin(req, res);
+    if (!userId) return;
+    const targetId = parseInt(req.params.formbarUserId, 10);
+    if (!targetId) return res.status(400).send('Invalid user id');
+    try {
+        const profile = await analytics.getBorrowerProfile(db, targetId);
+        const userNames = await resolveUserNames([targetId, userId]);
+        res.render('admin-borrower', {
+            user: req.session.user,
+            userId,
+            isAdmin: true,
+            formbarUrl: FORMBAR_URL,
+            profile,
+            userNames
+        });
+    } catch (err) {
+        console.error('Borrower profile error:', err);
+        res.status(500).send('Error loading borrower profile');
+    }
+});
+
+app.get('/admin/analytics/export/:report.csv', isAuthenticated, async (req, res) => {
+    const userId = requireAdmin(req, res);
+    if (!userId) return;
+    const report = String(req.params.report || '').toLowerCase();
+    try {
+        const dateRange = analytics.parseDateRange(req.query);
+        let csv = '';
+        let filename = 'formbank-export.csv';
+        if (report === 'transactions') {
+            csv = await analytics.exportTransactions(db, {
+                ...dateRange,
+                type: req.query.type,
+                status: req.query.status
+            });
+            filename = 'formbank-transactions.csv';
+        } else if (report === 'lending') {
+            csv = await analytics.exportLending(db);
+            filename = 'formbank-lending.csv';
+        } else if (report === 'checks') {
+            csv = await analytics.exportChecks(db);
+            filename = 'formbank-checks.csv';
+        } else if (report === 'summary') {
+            const summary = await analytics.getSummary(db, dateRange);
+            const pnl = await analytics.getProfitAndLoss(db, { ...dateRange, granularity: 'lifetime' });
+            csv = await analytics.exportFinancialSummary(db, summary, pnl);
+            filename = 'formbank-summary.csv';
+        } else {
+            return res.status(404).send('Unknown export');
+        }
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(csv);
+    } catch (err) {
+        console.error('Export error:', err);
+        res.status(500).send('Export failed');
+    }
+});
+
 app.get('/admin/checks', isAuthenticated, (req, res) => {
     const userId = requireAdmin(req, res);
     if (!userId) return;
@@ -554,9 +663,10 @@ app.get('/admin/checks', isAuthenticated, (req, res) => {
         }
         const checks = (rows || []).map((c) => {
             const isFormBankSender = c.sender_formbar_user_id === LENDER_USER_ID;
-            const senderPaid = (c.status === 'failed')
-                ? 0
-                : (isFormBankSender ? 0 : checkChargeToFormBank(c.amount));
+            const funded = c.status === 'uncashed' || c.status === 'completed' || c.status === 'funded_unpaid';
+            const senderPaid = funded
+                ? (isFormBankSender ? 0 : checkChargeToFormBank(c.amount))
+                : 0;
             const receiverGot = (c.status === 'completed') ? c.amount : 0;
             return {
                 ...c,
@@ -595,42 +705,34 @@ app.get('/credit', isAuthenticated, (req, res) => {
             return res.status(500).send('Error loading credit data');
         }
 
-        getCreditBalance(userId, (err, balanceData) => {
+        getActiveLoan(userId, (err, activeLoan) => {
             if (err) {
-                console.error('Error getting credit balance:', err);
+                console.error('Error getting active loan:', err);
                 return res.status(500).send('Error loading credit data');
             }
 
-            getActiveLoan(userId, (err, activeLoan) => {
+            getLoanHistory(userId, (err, loanHistory) => {
                 if (err) {
-                    console.error('Error getting active loan:', err);
+                    console.error('Error getting loan history:', err);
                     return res.status(500).send('Error loading credit data');
                 }
 
-                getLoanHistory(userId, (err, loanHistory) => {
-                    if (err) {
-                        console.error('Error getting loan history:', err);
-                        return res.status(500).send('Error loading credit data');
+                getTopCreditLimits(50, (hsErr, highscores) => {
+                    if (hsErr) {
+                        console.error('Error loading credit limit highscores:', hsErr);
                     }
-
-                    getTopCreditLimits(50, (hsErr, highscores) => {
-                        if (hsErr) {
-                            console.error('Error loading credit limit highscores:', hsErr);
-                        }
-                        const board = highscores || [];
-                        const ids = board.map((r) => r.user_id);
-                        resolveUserNames(ids).then((userNames) => {
-                            res.render('credit', {
-                                user: req.session.user,
-                                userId,
-                                creditLimit: limitData.current_limit,
-                                creditBalance: balanceData.credit_balance,
-                                activeLoan: activeLoan,
-                                loanHistory: loanHistory || [],
-                                highscores: board,
-                                userNames,
-                                isAdmin: userId === LENDER_USER_ID
-                            });
+                    const board = highscores || [];
+                    const ids = board.map((r) => r.user_id);
+                    resolveUserNames(ids).then((userNames) => {
+                        res.render('credit', {
+                            user: req.session.user,
+                            userId,
+                            creditLimit: limitData.current_limit,
+                            activeLoan: activeLoan,
+                            loanHistory: loanHistory || [],
+                            highscores: board,
+                            userNames,
+                            isAdmin: userId === LENDER_USER_ID
                         });
                     });
                 });
@@ -669,12 +771,38 @@ app.post('/credit/borrow', isAuthenticated, async (req, res) => {
             }
 
             // Create loan record first (before transfer)
-            createLoan(userId, principal, (err, loan) => {
+            createLoan(userId, principal, async (err, loan) => {
                 if (err) {
                     return res.status(500).json({ error: 'Failed to create loan record' });
                 }
 
-                // Transfer digipogs from lender to borrower
+                let ledgerId = null;
+                try {
+                    if (ledger) {
+                        const pending = await ledger.beginPending({
+                            idempotency_key: `loan_issue:${loan.id}`,
+                            type: 'loan_issue',
+                            actor_formbar_user_id: LENDER_USER_ID,
+                            counterparty_formbar_user_id: userId,
+                            related_loan_id: loan.id,
+                            requested_amount: principal,
+                            gross_transfer_amount: principal,
+                            net_amount: accounting.netAfterTax(principal),
+                            tax_amount: accounting.taxOnGross(principal)
+                        });
+                        ledgerId = pending.id;
+                        if (pending.existing && pending.row && pending.row.status === 'completed') {
+                            return res.json({
+                                success: true,
+                                message: `Loan of ${principal} digipogs already issued.`
+                            });
+                        }
+                    }
+                } catch (ledgerErr) {
+                    db.run('DELETE FROM credit_loans WHERE id = ?', [loan.id], () => {});
+                    return res.status(500).json({ error: 'Failed to record pending loan transfer' });
+                }
+
                 formbarApi.transferDigipogs(
                     socket,
                     LENDER_USER_ID,
@@ -682,26 +810,48 @@ app.post('/credit/borrow', isAuthenticated, async (req, res) => {
                     principal,
                     `FormBank loan: ${principal} digipogs`,
                     LENDER_PIN
-                ).then(result => {
-                    if (!result.success) {
-                        // Rollback: delete the loan record
-                        db.run('DELETE FROM credit_loans WHERE id = ?', [loan.id], () => {});
-                        
-                        // Check if it's an account lock error
-                        const errorMsg = result.error || 'Transfer failed';
-                        if (errorMsg.toLowerCase().includes('locked') || 
-                            errorMsg.toLowerCase().includes('too many failed attempts')) {
-                            return res.status(423).json({ 
-                                error: errorMsg,
-                                locked: true,
-                                suggestion: 'The lender account is temporarily locked. Please wait for the lock to expire or verify the LENDER_PIN in your .env file matches the account PIN in Formbar.'
-                            });
+                ).then(async (result) => {
+                    if (result.success) {
+                        if (ledger && ledgerId) {
+                            await ledger.markCompleted(ledgerId);
                         }
-                        
-                        return res.status(500).json({ error: errorMsg });
+                        return res.json({
+                            success: true,
+                            message: `Loan of ${principal} digipogs issued successfully. You received ${accounting.netAfterTax(principal)} digipogs (after 10% tax). You owe ${loan.amountOwed} digipogs.`
+                        });
                     }
 
-                    res.json({ success: true, message: `Loan of ${principal} digipogs issued successfully. You received ${Math.floor(principal * 0.9)} digipogs (after 10% tax). You owe ${loan.amountOwed} digipogs.` });
+                    const outcome = result.outcome || 'failure';
+                    if (outcome === 'timeout' || outcome === 'unknown') {
+                        if (ledger && ledgerId) {
+                            await ledger.markReconciliationRequired(
+                                ledgerId,
+                                result.error || 'Loan transfer outcome unknown',
+                                outcome
+                            );
+                        }
+                        return res.status(500).json({
+                            error: result.error || 'Transfer outcome unknown — loan kept for reconciliation',
+                            reconciliation: true
+                        });
+                    }
+
+                    if (ledger && ledgerId) {
+                        await ledger.markFailed(ledgerId, result.error || 'Transfer failed', 'failure');
+                    }
+                    db.run('DELETE FROM credit_loans WHERE id = ?', [loan.id], () => {});
+
+                    const errorMsg = result.error || 'Transfer failed';
+                    if (errorMsg.toLowerCase().includes('locked') ||
+                        errorMsg.toLowerCase().includes('too many failed attempts')) {
+                        return res.status(423).json({
+                            error: errorMsg,
+                            locked: true,
+                            suggestion: 'The lender account is temporarily locked. Please wait for the lock to expire or verify the LENDER_PIN in your .env file matches the account PIN in Formbar.'
+                        });
+                    }
+
+                    return res.status(500).json({ error: errorMsg });
                 });
             });
         });
@@ -724,7 +874,7 @@ app.post('/credit/repay', isAuthenticated, async (req, res) => {
         return res.status(400).json({ error: 'PIN is required for repayment.' });
     }
 
-    // Loan and credit_balance are only updated after successful transfer or verified credit deduction.
+    // Loan is only updated after successful transfer.
     getActiveLoan(userId, (err, activeLoan) => {
         if (err) {
             return res.status(500).json({ error: 'Database error' });
@@ -737,140 +887,11 @@ app.post('/credit/repay', isAuthenticated, async (req, res) => {
         if (remainingOwed <= 0) {
             return res.status(400).json({ error: 'Loan is already paid off' });
         }
+        if (repaymentAmount > remainingOwed) {
+            return res.status(400).json({ error: `Repayment cannot exceed remaining balance of ${remainingOwed} digipogs` });
+        }
 
-        // Get credit balance
-        getCreditBalance(userId, (err, balanceData) => {
-            if (err) {
-                return res.status(500).json({ error: 'Database error' });
-            }
-
-            const creditBalance = balanceData.credit_balance || 0;
-            let amountToApply = repaymentAmount;
-            let transferNeeded = repaymentAmount;
-            let creditUsed = 0;
-
-            // Apply credit balance first
-            if (creditBalance > 0 && repaymentAmount > 0) {
-                creditUsed = Math.min(creditBalance, repaymentAmount);
-                amountToApply = creditUsed;
-                transferNeeded = repaymentAmount - creditUsed;
-                
-                if (creditUsed > 0) {
-                    deductCreditBalance(userId, creditUsed, (err, deducted) => {
-                        if (err) {
-                            return res.status(500).json({ error: 'Failed to apply credit balance' });
-                        }
-                        // If deduction failed (e.g. balance was insufficient), treat as no credit used so we require a transfer
-                        if (!deducted) {
-                            creditUsed = 0;
-                        }
-                        processRepayment();
-                    });
-                } else {
-                    processRepayment();
-                }
-            } else {
-                processRepayment();
-            }
-
-            function processRepayment() {
-                // Cap repayment to remaining owed
-                const actualRepayment = Math.min(repaymentAmount, remainingOwed);
-                const actualTransferNeeded = Math.max(0, actualRepayment - creditUsed);
-
-                if (actualTransferNeeded > 0) {
-                    // PIN already validated at top of handler. Transfer first; only update loan after success.
-                    const pinForTransfer = req.body.pin;
-                    // Transfer from borrower to lender
-                    formbarApi.transferDigipogs(
-                        socket,
-                        userId,
-                        LENDER_USER_ID,
-                        actualTransferNeeded,
-                        `FormBank loan repayment: ${actualTransferNeeded} digipogs`,
-                        pinForTransfer
-                    ).then(result => {
-                        if (!result.success) {
-                            // Rollback credit deduction if it happened
-                            if (creditUsed > 0) {
-                                updateCreditBalance(userId, creditUsed, () => {});
-                            }
-                            return res.status(500).json({ error: result.error || 'Transfer failed' });
-                        }
-
-                        // Update loan payment
-                        updateLoanPayment(activeLoan.id, actualRepayment, (err, paymentResult) => {
-                            if (err) {
-                                return res.status(500).json({ error: 'Failed to update loan payment' });
-                            }
-
-                            // Handle overpayment (if any)
-                            const overpayment = repaymentAmount - actualRepayment;
-                            if (overpayment > 0) {
-                                updateCreditBalance(userId, overpayment, (err) => {
-                                    if (err) {
-                                        console.error('Failed to credit overpayment:', err);
-                                    }
-                                });
-                            }
-
-                            // Recalculate credit limit based on total repayments
-                            updateCreditLimitFromRepayments(userId, (limitErr, limitResult) => {
-                                if (limitErr) {
-                                    console.error('Failed to update credit limit from repayments:', limitErr);
-                                }
-
-                                const limitIncreased = limitResult && limitResult.increased;
-
-                                res.json({ 
-                                    success: true, 
-                                    message: `Repayment of ${actualRepayment} digipogs processed${overpayment > 0 ? ` (${overpayment} digipogs credited to your account)` : ''}.` +
-                                        (paymentResult.isPaid ? ' Loan paid off!' : '') +
-                                        (limitIncreased ? ' Your credit limit has increased.' : '')
-                                });
-                            });
-                        });
-                    });
-                } else {
-                    // No transfer needed, just update loan
-                    updateLoanPayment(activeLoan.id, actualRepayment, (err, paymentResult) => {
-                        if (err) {
-                            // Rollback credit deduction
-                            if (creditUsed > 0) {
-                                updateCreditBalance(userId, creditUsed, () => {});
-                            }
-                            return res.status(500).json({ error: 'Failed to update loan payment' });
-                        }
-
-                        // Handle overpayment
-                        const overpayment = repaymentAmount - actualRepayment;
-                        if (overpayment > 0) {
-                            updateCreditBalance(userId, overpayment, (err) => {
-                                if (err) {
-                                    console.error('Failed to credit overpayment:', err);
-                                }
-                            });
-                        }
-
-                        // Recalculate credit limit based on total repayments
-                        updateCreditLimitFromRepayments(userId, (limitErr, limitResult) => {
-                            if (limitErr) {
-                                console.error('Failed to update credit limit from repayments:', limitErr);
-                            }
-
-                            const limitIncreased = limitResult && limitResult.increased;
-
-                            res.json({ 
-                                success: true, 
-                                message: `Repayment of ${actualRepayment} digipogs processed using credit balance${overpayment > 0 ? ` (${overpayment} digipogs credited)` : ''}.` +
-                                    (paymentResult.isPaid ? ' Loan paid off!' : '') +
-                                    (limitIncreased ? ' Your credit limit has increased.' : '')
-                            });
-                        });
-                    });
-                }
-            }
-        });
+        processLoanRepayment(req, res, userId, activeLoan, repaymentAmount, borrowerPin, false);
     });
 });
 
@@ -885,7 +906,6 @@ app.post('/credit/repay/full', isAuthenticated, async (req, res) => {
         return res.status(400).json({ error: 'PIN is required for repayment.' });
     }
 
-    // Get active loan
     getActiveLoan(userId, (err, activeLoan) => {
         if (err) {
             return res.status(500).json({ error: 'Database error' });
@@ -899,106 +919,114 @@ app.post('/credit/repay/full', isAuthenticated, async (req, res) => {
             return res.status(400).json({ error: 'Loan is already paid off' });
         }
 
-        // Get credit balance
-        getCreditBalance(userId, (err, balanceData) => {
-            if (err) {
-                return res.status(500).json({ error: 'Database error' });
-            }
-
-            const creditBalance = balanceData.credit_balance || 0;
-            let creditUsed = Math.min(creditBalance, remainingOwed);
-            let transferNeeded = Math.max(0, remainingOwed - creditBalance);
-
-            // Apply credit balance first
-            if (creditUsed > 0) {
-                deductCreditBalance(userId, creditUsed, (err, deducted) => {
-                    if (err) {
-                        return res.status(500).json({ error: 'Failed to apply credit balance' });
-                    }
-                    // If deduction failed (e.g. balance was insufficient), require full transfer
-                    if (!deducted) {
-                        creditUsed = 0;
-                        transferNeeded = remainingOwed;
-                    }
-                    processFullRepayment();
-                });
-            } else {
-                processFullRepayment();
-            }
-
-            function processFullRepayment() {
-                if (transferNeeded > 0) {
-                    // PIN already validated at top of handler. Transfer first; only update loan after success.
-                    // Transfer from borrower to lender
-                    formbarApi.transferDigipogs(
-                        socket,
-                        userId,
-                        LENDER_USER_ID,
-                        transferNeeded,
-                        `FormBank loan full repayment: ${transferNeeded} digipogs`,
-                        borrowerPin
-                    ).then(result => {
-                        if (!result.success) {
-                            // Rollback credit deduction if it happened
-                            if (creditUsed > 0) {
-                                updateCreditBalance(userId, creditUsed, () => {});
-                            }
-                            return res.status(500).json({ error: result.error || 'Transfer failed' });
-                        }
-
-                        // Update loan payment
-                        updateLoanPayment(activeLoan.id, remainingOwed, (err, paymentResult) => {
-                            if (err) {
-                                return res.status(500).json({ error: 'Failed to update loan payment' });
-                            }
-
-                            // Loan should be paid now; recalculate credit limit based on total repayments
-                            updateCreditLimitFromRepayments(userId, (limitErr, limitResult) => {
-                                if (limitErr) {
-                                    console.error('Failed to update credit limit from repayments:', limitErr);
-                                }
-
-                                const limitIncreased = limitResult && limitResult.increased;
-
-                                res.json({ 
-                                    success: true, 
-                                    message: `Full repayment of ${remainingOwed} digipogs processed${creditUsed > 0 ? ` (${creditUsed} from credit balance, ${transferNeeded} transferred)` : ''}. Loan paid off!` +
-                                        (limitIncreased ? ' Your credit limit has increased.' : '')
-                                });
-                            });
-                        });
-                    });
-                } else {
-                    // No transfer needed, just update loan
-                    updateLoanPayment(activeLoan.id, remainingOwed, (err, paymentResult) => {
-                        if (err) {
-                            // Rollback credit deduction
-                            if (creditUsed > 0) {
-                                updateCreditBalance(userId, creditUsed, () => {});
-                            }
-                            return res.status(500).json({ error: 'Failed to update loan payment' });
-                        }
-
-                        // Loan should be paid now; recalculate credit limit based on total repayments
-                        updateCreditLimitFromRepayments(userId, (limitErr, limitResult) => {
-                            if (limitErr) {
-                                console.error('Failed to update credit limit from repayments:', limitErr);
-                            }
-
-                            const limitIncreased = limitResult && limitResult.increased;
-
-                            res.json({ 
-                                success: true, 
-                                message: `Full repayment of ${remainingOwed} digipogs processed using credit balance. Loan paid off!` +
-                                    (limitIncreased ? ' Your credit limit has increased.' : '')
-                            });
-                        });
-                    });
-                }
-            }
-        });
+        processLoanRepayment(req, res, userId, activeLoan, remainingOwed, borrowerPin, true);
     });
 });
+
+async function processLoanRepayment(req, res, userId, activeLoan, repaymentAmount, borrowerPin, isFull) {
+    const split = accounting.allocateRepayment(
+        activeLoan.principal,
+        activeLoan.amount_paid,
+        repaymentAmount
+    );
+    const idempotencyKey = req.body.idempotencyKey
+        || `loan_repay:${activeLoan.id}:${activeLoan.amount_paid}:${repaymentAmount}:${isFull ? 'full' : 'partial'}`;
+
+    let ledgerId = null;
+    try {
+        if (ledger) {
+            const pending = await ledger.beginPending({
+                idempotency_key: idempotencyKey,
+                type: 'loan_repay',
+                actor_formbar_user_id: userId,
+                counterparty_formbar_user_id: LENDER_USER_ID,
+                related_loan_id: activeLoan.id,
+                requested_amount: repaymentAmount,
+                gross_transfer_amount: repaymentAmount,
+                net_amount: accounting.netAfterTax(repaymentAmount),
+                tax_amount: accounting.taxOnGross(repaymentAmount),
+                principal_component: split.principalComponent,
+                interest_component: split.interestComponent,
+                metadata: { full: !!isFull }
+            });
+            ledgerId = pending.id;
+            if (pending.existing && pending.row && pending.row.status === 'completed') {
+                return res.json({ success: true, message: 'Repayment already processed.' });
+            }
+        }
+    } catch (ledgerErr) {
+        return res.status(500).json({ error: 'Failed to record pending repayment' });
+    }
+
+    const result = await formbarApi.transferDigipogs(
+        socket,
+        userId,
+        LENDER_USER_ID,
+        repaymentAmount,
+        isFull
+            ? `FormBank loan full repayment: ${repaymentAmount} digipogs`
+            : `FormBank loan repayment: ${repaymentAmount} digipogs`,
+        borrowerPin
+    );
+
+    if (!result.success) {
+        const outcome = result.outcome || 'failure';
+        if (ledger && ledgerId) {
+            if (outcome === 'timeout' || outcome === 'unknown') {
+                await ledger.markReconciliationRequired(
+                    ledgerId,
+                    result.error || 'Repayment outcome unknown',
+                    outcome
+                );
+                return res.status(500).json({
+                    error: result.error || 'Transfer outcome unknown — verify manually',
+                    reconciliation: true
+                });
+            }
+            await ledger.markFailed(ledgerId, result.error || 'Transfer failed', 'failure');
+        }
+        return res.status(500).json({ error: result.error || 'Transfer failed' });
+    }
+
+    updateLoanPayment(activeLoan.id, repaymentAmount, async (err, paymentResult) => {
+        if (err) {
+            if (ledger && ledgerId) {
+                await ledger.markReconciliationRequired(
+                    ledgerId,
+                    'Formbar transfer succeeded but loan payment update failed',
+                    'success'
+                );
+            }
+            return res.status(500).json({
+                error: 'Transfer succeeded but failed to update loan payment — contact support',
+                reconciliation: true
+            });
+        }
+
+        if (ledger && ledgerId) {
+            try {
+                await ledger.markCompleted(ledgerId);
+            } catch (markErr) {
+                console.error('Failed to complete repay ledger:', markErr.message);
+            }
+        }
+
+        updateCreditLimitFromRepayments(userId, (limitErr, limitResult) => {
+            if (limitErr) {
+                console.error('Failed to update credit limit from repayments:', limitErr);
+            }
+            const limitIncreased = limitResult && limitResult.increased;
+            res.json({
+                success: true,
+                message: (isFull
+                    ? `Full repayment of ${repaymentAmount} digipogs processed. Loan paid off!`
+                    : `Repayment of ${repaymentAmount} digipogs processed.` +
+                        (paymentResult.isPaid ? ' Loan paid off!' : '')) +
+                    (limitIncreased ? ' Your credit limit has increased.' : '')
+            });
+        });
+    });
+}
 
 // Check (write-check) routes
 app.get('/checks', isAuthenticated, (req, res) => {
@@ -1057,9 +1085,9 @@ app.get('/checks/:id', (req, res, next) => {
                     return res.status(400).send('Check already redeemed by someone else.');
                 }
                 // Funds already sit at FormBank from write time; pay receiver from FormBank.
-                payCheckFromFormBank(check, receiverId).then((result) => {
+                redeemCheckPayout(check, receiverId).then((result) => {
                     clearCheckPin(checkId);
-                    setCheckStatus(checkId, result.success ? 'completed' : 'failed', () => {});
+                    setCheckStatus(checkId, result.success ? 'completed' : 'funded_unpaid', () => {});
                     const safeCheck = { ...check };
                     delete safeCheck.pin_for_redemption;
                     resolveUserNames([receiverId, check.sender_formbar_user_id]).then((userNames) => {
@@ -1108,9 +1136,9 @@ app.get('/checks/:id', (req, res, next) => {
                     return res.status(403).send('This check was already redeemed by someone else.');
                 }
                 // Funds already sit at FormBank from write time; pay receiver from FormBank.
-                payCheckFromFormBank(check, userId).then((result) => {
+                redeemCheckPayout(check, userId).then((result) => {
                     clearCheckPin(checkId);
-                    setCheckStatus(checkId, result.success ? 'completed' : 'failed', () => {});
+                    setCheckStatus(checkId, result.success ? 'completed' : 'funded_unpaid', () => {});
                     getCheckById(checkId, (err2, updated) => {
                         if (err2 || !updated) {
                             return res.status(500).send('Error loading check');
@@ -1152,7 +1180,74 @@ function renderCheckDetail(req, res, check, userId) {
     });
 }
 
-app.post('/checks/write', isAuthenticated, (req, res) => {
+async function recordCheckDepositLegs(checkId, senderId, amount, fee, chargeTotal, groupId, skipDeposit) {
+    if (!ledger) return { depositId: null, feeId: null, taxId: null };
+    const deposit = await ledger.beginPending({
+        idempotency_key: `check_deposit:${checkId}`,
+        type: 'check_deposit',
+        actor_formbar_user_id: senderId,
+        related_check_id: checkId,
+        parent_group_id: groupId,
+        requested_amount: amount,
+        gross_transfer_amount: skipDeposit ? 0 : chargeTotal,
+        net_amount: skipDeposit ? 0 : accounting.netAfterTax(chargeTotal),
+        tax_amount: skipDeposit ? 0 : accounting.taxOnGross(chargeTotal),
+        fee_amount: fee,
+        metadata: { skipDeposit: !!skipDeposit }
+    });
+    const feeRow = await ledger.beginPending({
+        idempotency_key: `check_fee:${checkId}`,
+        type: 'check_fee',
+        actor_formbar_user_id: senderId,
+        related_check_id: checkId,
+        parent_group_id: groupId,
+        requested_amount: fee,
+        fee_amount: fee,
+        net_amount: fee
+    });
+    let taxId = null;
+    if (!skipDeposit && accounting.taxOnGross(chargeTotal) > 0) {
+        const taxRow = await ledger.beginPending({
+            idempotency_key: `check_deposit_tax:${checkId}`,
+            type: 'formbar_tax',
+            actor_formbar_user_id: senderId,
+            related_check_id: checkId,
+            parent_group_id: groupId,
+            requested_amount: accounting.taxOnGross(chargeTotal),
+            gross_transfer_amount: chargeTotal,
+            tax_amount: accounting.taxOnGross(chargeTotal),
+            metadata: { leg: 'deposit' }
+        });
+        taxId = taxRow.id;
+    }
+    return { depositId: deposit.id, feeId: feeRow.id, taxId };
+}
+
+async function completeCheckDepositLegs(ids, skipDeposit) {
+    if (!ledger) return;
+    if (skipDeposit) {
+        if (ids.depositId) await ledger.markCompleted(ids.depositId, { formbar_outcome: 'success' });
+    } else if (ids.depositId) {
+        await ledger.markCompleted(ids.depositId);
+    }
+    if (ids.feeId) await ledger.markCompleted(ids.feeId);
+    if (ids.taxId) await ledger.markCompleted(ids.taxId);
+}
+
+async function failCheckDepositLegs(ids, error, outcome) {
+    if (!ledger) return;
+    if (ids.depositId) {
+        if (outcome === 'timeout' || outcome === 'unknown') {
+            await ledger.markReconciliationRequired(ids.depositId, error, outcome);
+        } else {
+            await ledger.markFailed(ids.depositId, error, outcome || 'failure');
+        }
+    }
+    if (ids.feeId) await ledger.markFailed(ids.feeId, error, outcome || 'failure');
+    if (ids.taxId) await ledger.markFailed(ids.taxId, error, outcome || 'failure');
+}
+
+app.post('/checks/write', isAuthenticated, async (req, res) => {
     const senderId = req.session.userId;
     if (!senderId) {
         return res.status(400).json({ error: 'User ID not found in session' });
@@ -1181,85 +1276,242 @@ app.post('/checks/write', isAuthenticated, (req, res) => {
     const isFormBank = senderId === LENDER_USER_ID;
     const memoLabel = memo || `Check: ${amount} digipogs`;
 
-    const fundThen = (afterFund) => {
-        if (isFormBank) {
-            // FormBank already holds the digipogs; skip the deposit charge.
-            return afterFund({ success: true });
+    // Create check row early so ledger can reference check id (pending status until funded)
+    createCheck(senderId, receiverId, amount, fee, 'failed', memo, null, async (err, row) => {
+        if (err || !row) {
+            return res.status(500).json({ error: 'Failed to create check record' });
         }
-        return formbarApi.transferDigipogs(
-            socket,
-            senderId,
-            CHECK_FUNDS,
-            chargeTotal,
-            `Check deposit: net ${amount}, FormBank fee ${fee}`,
-            pin
-        ).then(afterFund);
-    };
+        const checkId = row.id;
+        const groupId = `check:${checkId}`;
+        let depositIds = { depositId: null, feeId: null, taxId: null };
 
-    if (receiverId === null) {
-        // Blank check: charge enough for payout + FormBank fee; payout on redeem.
-        fundThen((result) => {
-            if (!result.success) {
-                createCheck(senderId, null, amount, fee, 'failed', memo, null, () => {});
-                return res.status(500).json({ error: result.error || `Deposit to ${CHECK_FUNDS_LABEL} failed` });
-            }
-            createCheck(senderId, null, amount, fee, 'uncashed', memo, null, (err, row) => {
-                if (err) {
-                    return res.status(500).json({ error: 'Check funded but database error' });
-                }
-                res.json({
-                    success: true,
-                    checkId: row.id,
-                    charged: isFormBank ? 0 : chargeTotal,
-                    fee,
-                    payout,
-                    message: isFormBank
-                        ? `Blank check created (${CHECK_FUNDS_LABEL}).`
-                        : `Charged ${chargeTotal} digipogs (covers Formbar tax on both legs + FormBank's 5% fee of ${fee}). Receiver will net ${amount}.`
-                });
-            });
-        });
-        return;
-    }
-
-    // Specific receiver: charge FormBank enough, then pay receiver so they net 100% of amount.
-    fundThen((result1) => {
-        if (!result1.success) {
-            createCheck(senderId, receiverId, amount, fee, 'failed', memo, null, () => {});
-            return res.status(500).json({ error: result1.error || `Deposit to ${CHECK_FUNDS_LABEL} failed` });
+        try {
+            depositIds = await recordCheckDepositLegs(
+                checkId, senderId, amount, fee, chargeTotal, groupId, isFormBank
+            );
+        } catch (ledgerErr) {
+            return res.status(500).json({ error: 'Failed to record pending check deposit' });
         }
-        formbarApi.transferDigipogs(
-            socket,
-            CHECK_FUNDS,
-            receiverId,
-            payout,
-            memoLabel,
-            LENDER_PIN
-        ).then((result2) => {
-            if (!result2.success) {
-                createCheck(senderId, receiverId, amount, fee, 'failed', memo, null, () => {});
+
+        const doDeposit = isFormBank
+            ? Promise.resolve({ success: true, outcome: 'success' })
+            : formbarApi.transferDigipogs(
+                socket,
+                senderId,
+                CHECK_FUNDS,
+                chargeTotal,
+                `Check deposit: net ${amount}, FormBank fee ${fee}`,
+                pin
+            );
+
+        doDeposit.then(async (result1) => {
+            if (!result1.success) {
+                await failCheckDepositLegs(
+                    depositIds,
+                    result1.error || 'Deposit failed',
+                    result1.outcome || 'failure'
+                );
                 return res.status(500).json({
-                    error: result2.error || `${CHECK_FUNDS_LABEL} payout to receiver failed. Deposit may already be at FormBank — contact support.`
+                    error: result1.error || `Deposit to ${CHECK_FUNDS_LABEL} failed`,
+                    reconciliation: result1.outcome === 'timeout' || result1.outcome === 'unknown'
                 });
             }
-            createCheck(senderId, receiverId, amount, fee, 'completed', memo, null, (err, row) => {
-                if (err) {
-                    return res.status(500).json({ error: 'Check paid but database error' });
+
+            try {
+                await completeCheckDepositLegs(depositIds, isFormBank);
+            } catch (e) {
+                if (ledger && depositIds.depositId) {
+                    await ledger.markReconciliationRequired(
+                        depositIds.depositId,
+                        'Deposit succeeded but ledger complete failed',
+                        'success'
+                    );
                 }
-                res.json({
-                    success: true,
-                    checkId: row.id,
-                    charged: isFormBank ? 0 : chargeTotal,
-                    fee,
-                    payout,
-                    message: isFormBank
-                        ? `Paid ${payout} digipogs from ${CHECK_FUNDS_LABEL} so receiver nets ${amount}.`
-                        : `Charged ${chargeTotal}; ${CHECK_FUNDS_LABEL} paid ${payout} (receiver nets ${amount}); FormBank keeps ~${fee} (5%).`
+            }
+
+            if (receiverId === null) {
+                setCheckStatus(checkId, 'uncashed', (statusErr) => {
+                    if (statusErr) {
+                        return res.status(500).json({
+                            error: 'Check funded but database error',
+                            reconciliation: true,
+                            checkId
+                        });
+                    }
+                    res.json({
+                        success: true,
+                        checkId,
+                        charged: isFormBank ? 0 : chargeTotal,
+                        fee,
+                        payout,
+                        message: isFormBank
+                            ? `Blank check created (${CHECK_FUNDS_LABEL}).`
+                            : `Charged ${chargeTotal} digipogs (covers Formbar tax on both legs + FormBank's 5% fee of ${fee}). Receiver will net ${amount}.`
+                    });
+                });
+                return;
+            }
+
+            let payoutLedgerId = null;
+            try {
+                if (ledger) {
+                    const payoutPending = await ledger.beginPending({
+                        idempotency_key: `check_payout:${checkId}`,
+                        type: 'check_payout',
+                        counterparty_formbar_user_id: receiverId,
+                        related_check_id: checkId,
+                        parent_group_id: groupId,
+                        requested_amount: amount,
+                        gross_transfer_amount: payout,
+                        net_amount: amount,
+                        tax_amount: accounting.taxOnGross(payout)
+                    });
+                    payoutLedgerId = payoutPending.id;
+                }
+            } catch (e) {
+                setCheckStatus(checkId, 'funded_unpaid', () => {});
+                return res.status(500).json({
+                    error: 'Deposit succeeded but failed to record payout — contact support',
+                    reconciliation: true,
+                    checkId
+                });
+            }
+
+            formbarApi.transferDigipogs(
+                socket,
+                CHECK_FUNDS,
+                receiverId,
+                payout,
+                memoLabel,
+                LENDER_PIN
+            ).then(async (result2) => {
+                if (!result2.success) {
+                    const outcome = result2.outcome || 'failure';
+                    if (ledger && payoutLedgerId) {
+                        if (outcome === 'timeout' || outcome === 'unknown') {
+                            await ledger.markReconciliationRequired(
+                                payoutLedgerId,
+                                result2.error || 'Payout outcome unknown',
+                                outcome
+                            );
+                        } else {
+                            await ledger.markFailed(payoutLedgerId, result2.error || 'Payout failed', 'failure');
+                        }
+                    }
+                    setCheckStatus(checkId, 'funded_unpaid', () => {});
+                    return res.status(500).json({
+                        error: result2.error || `${CHECK_FUNDS_LABEL} payout to receiver failed. Deposit is at FormBank — contact support.`,
+                        reconciliation: true,
+                        checkId
+                    });
+                }
+
+                if (ledger && payoutLedgerId) {
+                    try {
+                        await ledger.markCompleted(payoutLedgerId);
+                        if (accounting.taxOnGross(payout) > 0) {
+                            await ledger.insertCompleted({
+                                idempotency_key: `check_payout_tax:${checkId}`,
+                                type: 'formbar_tax',
+                                related_check_id: checkId,
+                                parent_group_id: groupId,
+                                counterparty_formbar_user_id: receiverId,
+                                requested_amount: accounting.taxOnGross(payout),
+                                gross_transfer_amount: payout,
+                                tax_amount: accounting.taxOnGross(payout),
+                                metadata: { leg: 'payout' }
+                            });
+                        }
+                    } catch (e) {
+                        await ledger.markReconciliationRequired(
+                            payoutLedgerId,
+                            'Payout succeeded but ledger complete failed',
+                            'success'
+                        );
+                    }
+                }
+
+                setCheckStatus(checkId, 'completed', (statusErr) => {
+                    if (statusErr) {
+                        return res.status(500).json({
+                            error: 'Check paid but database error',
+                            reconciliation: true,
+                            checkId
+                        });
+                    }
+                    res.json({
+                        success: true,
+                        checkId,
+                        charged: isFormBank ? 0 : chargeTotal,
+                        fee,
+                        payout,
+                        message: isFormBank
+                            ? `Paid ${payout} digipogs from ${CHECK_FUNDS_LABEL} so receiver nets ${amount}.`
+                            : `Charged ${chargeTotal}; ${CHECK_FUNDS_LABEL} paid ${payout} (receiver nets ${amount}); FormBank keeps ~${fee} (5%).`
+                    });
                 });
             });
         });
     });
 });
+
+async function redeemCheckPayout(check, receiverId) {
+    const payout = checkPayoutFromFormBank(check.amount);
+    const groupId = `check:${check.id}`;
+    let payoutLedgerId = null;
+    if (ledger) {
+        const pending = await ledger.beginPending({
+            idempotency_key: `check_payout:${check.id}`,
+            type: 'check_payout',
+            counterparty_formbar_user_id: receiverId,
+            related_check_id: check.id,
+            parent_group_id: groupId,
+            requested_amount: check.amount,
+            gross_transfer_amount: payout,
+            net_amount: check.amount,
+            tax_amount: accounting.taxOnGross(payout)
+        });
+        payoutLedgerId = pending.id;
+        if (pending.existing && pending.row && pending.row.status === 'completed') {
+            return { success: true, already: true };
+        }
+    }
+
+    const result = await payCheckFromFormBank(check, receiverId);
+    if (result.success) {
+        if (ledger && payoutLedgerId) {
+            await ledger.markCompleted(payoutLedgerId);
+            if (accounting.taxOnGross(payout) > 0) {
+                await ledger.insertCompleted({
+                    idempotency_key: `check_payout_tax:${check.id}`,
+                    type: 'formbar_tax',
+                    related_check_id: check.id,
+                    parent_group_id: groupId,
+                    counterparty_formbar_user_id: receiverId,
+                    requested_amount: accounting.taxOnGross(payout),
+                    gross_transfer_amount: payout,
+                    tax_amount: accounting.taxOnGross(payout),
+                    metadata: { leg: 'payout' }
+                });
+            }
+        }
+        return { success: true };
+    }
+
+    const outcome = result.outcome || 'failure';
+    if (ledger && payoutLedgerId) {
+        if (outcome === 'timeout' || outcome === 'unknown') {
+            await ledger.markReconciliationRequired(
+                payoutLedgerId,
+                result.error || 'Payout outcome unknown',
+                outcome
+            );
+        } else {
+            await ledger.markFailed(payoutLedgerId, result.error || 'Payout failed', 'failure');
+        }
+    }
+    return { success: false, error: result.error, outcome, reconciliation: outcome === 'timeout' || outcome === 'unknown' };
+}
 
 // Socket.io client to auth server
 const socket = io(AUTH_URL, {

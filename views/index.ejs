@@ -183,6 +183,7 @@
                 <a href="/checks" class="nav-link">Checks →</a>
                 <% if (typeof isAdmin !== 'undefined' && isAdmin) { %>
                 <a href="/admin" class="nav-link">Admin →</a>
+                <a href="/admin/analytics" class="nav-link">Analytics →</a>
                 <a href="/admin/checks" class="nav-link">All Checks →</a>
                 <% } %>
                 <a href="/logout" class="nav-link">Logout</a>
@@ -218,14 +219,6 @@
                 <p>
                     Each time you successfully pay off a loan, your credit limit increases by 500 digipogs. 
                     Build your credit and unlock higher borrowing power.
-                </p>
-            </div>
-            <div class="feature-card">
-                <div class="feature-icon">💳</div>
-                <h3>Credit Balance</h3>
-                <p>
-                    Overpayments are automatically credited to your account for future loan repayments. 
-                    Never lose a digipog - every payment counts.
                 </p>
             </div>
             <div class="feature-card">
@@ -268,7 +261,7 @@
                 <li>20% interest is calculated on the principal amount</li>
                 <li>Formbar applies a 10% tax on all transfers (this is automatic)</li>
                 <li>You receive 90% of the loan amount, but owe the full principal + 20% interest</li>
-                <li>Overpayments are credited to your account for future use</li>
+                <li>Repayments cannot exceed your remaining loan balance</li>
                 <li>Check fee: sender pays the FormBank pool enough for Formbar’s 10% tax on both transfers plus FormBank’s net 5%; receiver gets 100% of the check amount</li>
                 <li>Blank checks: same deposit to the FormBank pool when you write; the pool pays the first redeemer the full amount via the check status page</li>
             </ul>

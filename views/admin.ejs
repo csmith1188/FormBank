@@ -108,6 +108,7 @@
             </div>
             <div class="nav-links">
                 <a href="/">Home</a>
+                <a href="/admin/analytics">Analytics</a>
                 <a href="/admin/checks">All Checks</a>
                 <a href="/credit">Credit</a>
                 <a href="/checks">Checks</a>
@@ -116,31 +117,26 @@
         </div>
 
         <div class="section">
-            <h2>Users – Credit Limits &amp; Balances</h2>
+            <h2>Users – Credit Limits</h2>
             <% if (users && users.length > 0) { %>
             <table>
                 <thead>
                     <tr>
                         <th>User</th>
                         <th>Credit Limit</th>
-                        <th>Credit Balance</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <% let totalBalance = 0; %>
                     <% users.forEach(u => { %>
-                    <% totalBalance += (u.credit_balance || 0); %>
                     <tr>
                         <td><%- formbarUserLink(u.user_id, userNames) %></td>
                         <td><%= u.current_limit %> dp</td>
-                        <td><%= u.credit_balance || 0 %> dp</td>
                     </tr>
                     <% }); %>
                 </tbody>
             </table>
             <div class="summary">
-                Total users in table: <strong><%= users.length %></strong><br>
-                Total outstanding credit balance: <strong><%= totalBalance %> dp</strong>
+                Total users in table: <strong><%= users.length %></strong>
             </div>
             <% } else { %>
             <p style="color:#666;">No credit data found yet.</p>

@@ -7,7 +7,6 @@
 ### Credit & Loans
 - **Loan system**: Borrow digipogs with a fixed 20% interest per loan
 - **Credit limits**: Start at 500 digipogs; limit increases by +500 each time your total repayments reach your current credit limit (configured via `CREDIT_LIMIT_STEP`)
-- **Credit balance**: Overpayments are credited for future repayments
 - **One active loan** per user at a time
 - **Tax-aware**: Handles Formbar’s 10% transfer tax correctly
 
@@ -19,6 +18,12 @@
 - **Check status page**: Sender and receiver can view check details and a QR code for the status URL
 - **FormBank account**: If the writer is the lender (`LENDER_USER_ID`), the deposit charge is skipped (funds already at FormBank)
 - **Check vault**: If `POOL_ID` is set, deposits and payouts go through that Formbar pool (Formbar DEV transfer API). If `POOL_ID` is blank, checks use `LENDER_USER_ID` instead.
+- **Statuses**: `uncashed`, `completed`, `failed`, and `funded_unpaid` (deposit succeeded but payout did not)
+
+### Admin analytics
+- **Ledger**: Append-only `financial_transactions` records every loan issue/repay, check deposit/payout/fee, Formbar tax, and credit-limit change
+- **Dashboard**: `/admin/analytics` (lender admin only) with financial position, P&L, loan/credit/check/user analytics, risk rules, reconciliation queue, Chart.js charts, and CSV exports
+- **Reconciliation**: Timeouts and Formbar-success/local-DB-fail cases are marked `reconciliation_required` instead of silently dropping records
 
 ## Setup
 
@@ -72,13 +77,30 @@
 ```bash
 npm start
 ```
-The app is available at `http://localhost:3000` (or your configured `PORT`).
+The app is available at `http://localhost:3000` (or your configured `PORT`). Migrations run automatically on startup.
+
+### Tests
+```bash
+npm test
+```
+
+## Accounting assumptions (analytics)
+
+- **Formbar tax**: Recipient nets `floor(gross × 0.9)`. Gross-up helpers live in `lib/accounting.js`.
+- **Interest collected**: Principal-first allocation. Contracted interest is not counted as revenue until collected.
+- **Check fee revenue**: Recognized when a check deposit completes. Uncashed / `funded_unpaid` funds are **liabilities** (escrow), not profit.
+- **Formbar taxes**: Recorded as expenses (not as FormBank fee revenue).
+- **Borrower credit-balance liabilities**: FormBank has no per-user overpayment wallet; this card is **0**. Held user funds appear as check escrow or unresolved ledger rows.
+- **Available funds**: There is no Formbar balance API in this app. The dashboard shows **Unverified** rather than an estimate.
+- **Active users**: Distinct Formbar IDs with recorded financial activity — not the size of the local `users` username cache.
+- **No overdue/default**: Loan age buckets are informational only.
+- **Historical gaps**: Pre-migration repayments are backfilled as one aggregated `loan_repay` per loan (`legacy_aggregate`). Failed historical checks do not invent successful deposits. Credit-limit increase history starts when ledger writing began.
 
 ## How it works
 
 ### Credit & loans (summary)
 - Borrow **P** digipogs → receive **0.9×P** (after 10% tax), owe **P×1.2**
-- Repayments reduce the balance; overpayments go to credit balance
+- Repayments reduce the balance and cannot exceed the remaining amount owed
 - One active loan per user; every time your total repayments reach your current credit limit, that limit increases by `CREDIT_LIMIT_STEP` (default 500)
 
 ### Checks
@@ -92,21 +114,28 @@ The app is available at `http://localhost:3000` (or your configured `PORT`).
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/` | Home (requires login) |
-| GET | `/credit` | Credit dashboard: limit, balance, active loan, history |
+| GET | `/credit` | Credit dashboard: limit, active loan, history |
 | POST | `/credit/borrow` | Request a loan (`amount`) |
 | POST | `/credit/repay` | Repay (`amount`, `pin`) |
 | POST | `/credit/repay/full` | Pay full remaining balance (`pin`) |
 | GET | `/checks` | Checks dashboard: list and write-check form |
 | POST | `/checks/write` | Write a check (`receiverId` optional, `amount`, `pin`, `memo` optional) |
 | GET | `/checks/:id` | Check detail (and QR). If `?receiverId=` is set, redeem for that user (no login). |
+| GET | `/admin` | Credit limits table (lender only) |
+| GET | `/admin/checks` | All checks (lender only) |
+| GET | `/admin/analytics` | Analytics dashboard (lender only) |
+| GET | `/admin/analytics/borrowers/:formbarUserId` | Borrower profile (lender only) |
+| GET | `/admin/analytics/export/:report.csv` | CSV exports: `transactions`, `lending`, `checks`, `summary` |
+| GET | `/admin/analytics/api/summary` | JSON summary for charts/filters |
 
 ## Database schema (main tables)
 
 - **credit_loans** – Loan records (borrower, principal, amount_owed, amount_paid, status, etc.)
 - **credit_limits** – Per-user borrowing limit and paid-off count
-- **credit_balances** – Overpayment credit per user
-- **checks** – Check records: sender, receiver (nullable), amount, fee_charged, status (`completed` / `failed` / `uncashed`), memo, `pin_for_redemption` (used once for blank-check redemption, then cleared)
-- **users** – Usernames (from login)
+- **checks** – Check records: sender, receiver (nullable), amount, fee_charged, status (`completed` / `failed` / `uncashed` / `funded_unpaid`), memo, `cashed_at`, `pin_for_redemption` (cleared after redeem)
+- **financial_transactions** – Append-only ledger (types, amounts, tax/fee/principal/interest components, status, idempotency keys)
+- **financial_snapshots** – Optional daily position snapshots for historical charts
+- **users** – Usernames (from login; not Formbar population)
 
 ## Tech stack
 - **Backend**: Node.js, Express

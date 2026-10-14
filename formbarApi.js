@@ -58,22 +58,34 @@ function normalizeTransferParty(party, defaultType) {
  * @param {string} memo - Reason/memo for transfer
  * @param {string|number} pin - PIN for authentication (must be a number)
  * @param {boolean|{fromType?: 'user'|'pool', toType?: 'user'|'pool'}} [options] - `true` means to-pool; or `{ fromType, toType }`
- * @returns {Promise<{success: boolean, error?: string}>}
+ * @returns {Promise<{success: boolean, error?: string, outcome?: 'success'|'failure'|'timeout'|'unknown'}>}
  */
 function transferDigipogs(socket, from, to, amount, memo, pin, options = false) {
     return new Promise((resolve) => {
         if (!socket || !socket.connected) {
-            return resolve({ success: false, error: 'Not connected to Formbar server' });
+            return resolve({
+                success: false,
+                outcome: 'failure',
+                error: 'Not connected to Formbar server'
+            });
         }
 
         if (!amount || amount <= 0) {
-            return resolve({ success: false, error: 'Invalid transfer amount' });
+            return resolve({
+                success: false,
+                outcome: 'failure',
+                error: 'Invalid transfer amount'
+            });
         }
 
         // PIN must be a number, not a string (per Formbar docs)
         const pinNumber = typeof pin === 'string' ? parseInt(pin, 10) : pin;
         if (isNaN(pinNumber)) {
-            return resolve({ success: false, error: 'Invalid PIN - must be a number' });
+            return resolve({
+                success: false,
+                outcome: 'failure',
+                error: 'Invalid PIN - must be a number'
+            });
         }
 
         const opts = (options === true || options === false)
@@ -82,7 +94,11 @@ function transferDigipogs(socket, from, to, amount, memo, pin, options = false) 
         const fromParty = normalizeTransferParty(from, opts.fromType || 'user');
         const toParty = normalizeTransferParty(to, opts.toType || 'user');
         if (!fromParty || !toParty) {
-            return resolve({ success: false, error: 'Invalid sender or recipient' });
+            return resolve({
+                success: false,
+                outcome: 'failure',
+                error: 'Invalid sender or recipient'
+            });
         }
 
         // User-to-user: numeric ids (current Formbar main). Pool parties: typed { id, type }
@@ -99,59 +115,60 @@ function transferDigipogs(socket, from, to, amount, memo, pin, options = false) 
         // According to Formbar docs, response comes as 'transferResponse' event
         // Format: { success: true/false, message: "..." }
         let resolved = false;
-        
+
         const responseHandler = (response) => {
             if (resolved) return;
             resolved = true;
             socket.off('transferResponse', responseHandler);
-            
-            console.log('Transfer response received:', response);
-            
+
+            console.log('Transfer response received:', {
+                success: response && response.success,
+                message: response && response.message
+            });
+
             // Response format per docs: { success: true/false, message: "..." }
             if (response && response.success === false) {
                 const errorMessage = response.message || 'Transfer failed';
-                
-                // Check for account lock messages
-                if (errorMessage.toLowerCase().includes('locked') || 
+
+                if (errorMessage.toLowerCase().includes('locked') ||
                     errorMessage.toLowerCase().includes('too many failed attempts')) {
-                    console.error('Account locked by Formbar:', errorMessage);
+                    console.error('Account locked by Formbar');
                 }
-                
-                resolve({ 
-                    success: false, 
+
+                resolve({
+                    success: false,
+                    outcome: 'failure',
                     error: errorMessage
                 });
             } else if (response && response.success === true) {
-                resolve({ success: true });
+                resolve({ success: true, outcome: 'success' });
             } else {
-                // Unexpected response format
-                console.warn('Unexpected response format:', response);
-                resolve({ 
-                    success: false, 
-                    error: 'Unexpected response format from Formbar' 
+                console.warn('Unexpected response format from Formbar');
+                resolve({
+                    success: false,
+                    outcome: 'unknown',
+                    error: 'Unexpected response format from Formbar'
                 });
             }
         };
 
-        // Listen for transferResponse event (per Formbar documentation)
         socket.once('transferResponse', responseHandler);
 
-        // Emit the transfer request
         console.log('Emitting transferDigipogs:', { from: data.from, to: data.to, amount });
         socket.emit('transferDigipogs', data);
 
-        // Set a timeout - Formbar should respond via transferResponse event
         setTimeout(() => {
             if (!resolved) {
                 resolved = true;
                 socket.off('transferResponse', responseHandler);
                 console.warn('Transfer timeout - no response received from Formbar');
-                resolve({ 
-                    success: false, 
-                    error: 'Transfer timeout - no response from Formbar. Please verify the transfer manually.' 
+                resolve({
+                    success: false,
+                    outcome: 'timeout',
+                    error: 'Transfer timeout - no response from Formbar. Please verify the transfer manually.'
                 });
             }
-        }, 10000); // 10 second timeout
+        }, 10000);
     });
 }
 

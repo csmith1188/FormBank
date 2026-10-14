@@ -232,6 +232,7 @@
                 <a href="/checks" class="nav-link">Checks</a>
                 <% if (typeof isAdmin !== 'undefined' && isAdmin) { %>
                 <a href="/admin" class="nav-link">Admin</a>
+                <a href="/admin/analytics" class="nav-link">Analytics</a>
                 <% } %>
                 <a href="/logout" class="nav-link">Logout</a>
             </p>
@@ -241,10 +242,6 @@
             <div class="stat-card">
                 <h3>Credit Limit</h3>
                 <div class="value"><%= creditLimit %></div>
-            </div>
-            <div class="stat-card">
-                <h3>Credit Balance</h3>
-                <div class="value"><%= creditBalance %></div>
             </div>
             <% if (activeLoan) { %>
             <div class="stat-card">
@@ -274,8 +271,8 @@
             <form id="repayForm" onsubmit="return submitRepay(event)">
                 <div class="form-group">
                     <label for="repayAmount">Repayment Amount (digipogs)</label>
-                    <input type="number" id="repayAmount" name="amount" min="1" required>
-                    <small style="color: #666;">Suggested: <%= activeLoan.amount_owed - activeLoan.amount_paid %> digipogs (full repayment)</small>
+                    <input type="number" id="repayAmount" name="amount" min="1" max="<%= activeLoan.amount_owed - activeLoan.amount_paid %>" required>
+                    <small style="color: #666;">Maximum: <%= activeLoan.amount_owed - activeLoan.amount_paid %> digipogs (remaining balance)</small>
                 </div>
                 <div class="form-group">
                     <label for="repayPin">PIN (required for repayment)</label>
@@ -423,8 +420,9 @@
             const amount = parseInt(formData.get('amount'));
             const pin = (formData.get('pin') || '').toString().trim();
 
-            if (amount <= 0) {
-                showMessage('repayMessage', 'Invalid repayment amount', 'error');
+            const remainingOwed = <%= activeLoan ? (activeLoan.amount_owed - activeLoan.amount_paid) : 0 %>;
+            if (amount <= 0 || amount > remainingOwed) {
+                showMessage('repayMessage', 'Repayment must be between 1 and ' + remainingOwed + ' digipogs', 'error');
                 return false;
             }
             if (!pin) {
