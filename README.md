@@ -121,7 +121,10 @@ npm test
 | GET | `/checks` | Checks dashboard: list and write-check form |
 | POST | `/checks/write` | Write a check (`receiverId` optional, `amount`, `pin`, `memo` optional) |
 | GET | `/checks/:id` | Check detail (and QR). If `?receiverId=` is set, redeem for that user (no login). |
-| GET | `/admin` | Credit limits table (lender only) |
+| GET | `/admin` | Credit limits + loan/balance edit tools (lender only) |
+| POST | `/admin/credit-limit` | Set/create a borrower's credit limit (local bookkeeping) |
+| POST | `/admin/loans/:id` | Edit loan principal, owed, paid, status (local bookkeeping) |
+| POST | `/admin/loans/:id/void` | Void a loan locally (no Formbar refund) |
 | GET | `/admin/checks` | All checks (lender only) |
 | GET | `/admin/analytics` | Analytics dashboard (lender only) |
 | GET | `/admin/analytics/borrowers/:formbarUserId` | Borrower profile (lender only) |

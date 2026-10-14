@@ -14,6 +14,7 @@ const { createLedger } = require('./lib/ledger');
 const { migrate } = require('./db/migrate');
 const { getReconciliationReport } = require('./lib/reconcile');
 const analytics = require('./lib/analytics');
+const adminEdits = require('./lib/adminEdits');
 
 let ledger = null;
 
@@ -481,7 +482,7 @@ app.get('/admin', isAuthenticated, (req, res) => {
     if (!userId) return;
 
     db.all(
-        'SELECT borrower_formbar_user_id AS user_id, current_limit ' +
+        'SELECT borrower_formbar_user_id AS user_id, current_limit, paid_off_count ' +
         'FROM credit_limits ' +
         'ORDER BY user_id ASC',
         [],
@@ -490,19 +491,250 @@ app.get('/admin', isAuthenticated, (req, res) => {
                 console.error('Error loading admin data:', err);
                 return res.status(500).send('Error loading admin data');
             }
-            const users = rows || [];
-            const ids = users.map(u => u.user_id).concat([userId]);
-            resolveUserNames(ids).then((userNames) => {
-                res.render('admin', {
-                    user: req.session.user,
-                    userId,
-                    isAdmin: true,
-                    users,
-                    userNames
+            db.all(
+                `SELECT id, borrower_formbar_user_id, principal, amount_owed, amount_paid, status, created_at, paid_at
+                 FROM credit_loans
+                 WHERE status IN ('active', 'paid', 'void', 'superseded')
+                 ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paid' THEN 1 ELSE 2 END, created_at DESC
+                 LIMIT 200`,
+                [],
+                (loanErr, loanRows) => {
+                    if (loanErr) {
+                        console.error('Error loading admin loans:', loanErr);
+                        return res.status(500).send('Error loading admin data');
+                    }
+                    const users = rows || [];
+                    const loans = loanRows || [];
+                    const ids = users.map(u => u.user_id)
+                        .concat(loans.map(l => l.borrower_formbar_user_id))
+                        .concat([userId]);
+                    resolveUserNames(ids).then((userNames) => {
+                        res.render('admin', {
+                            user: req.session.user,
+                            userId,
+                            isAdmin: true,
+                            users,
+                            loans,
+                            userNames,
+                            flash: req.query.msg || null,
+                            flashError: req.query.err || null
+                        });
+                    });
+                }
+            );
+        }
+    );
+});
+
+function adminRedirect(res, returnTo, query) {
+    const base = returnTo && String(returnTo).startsWith('/admin')
+        ? String(returnTo).split('?')[0]
+        : '/admin';
+    const params = new URLSearchParams();
+    if (query.msg) params.set('msg', query.msg);
+    if (query.err) params.set('err', query.err);
+    const qs = params.toString();
+    res.redirect(qs ? `${base}?${qs}` : base);
+}
+
+async function recordAdminAdjustment(entry) {
+    if (!ledger) return;
+    const key = entry.idempotency_key || `admin_adj:${entry.type}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    await ledger.insertCompleted({
+        ...entry,
+        idempotency_key: key,
+        type: entry.type || 'adjustment',
+        status: 'completed',
+        formbar_outcome: 'success',
+        metadata: {
+            admin_edit: true,
+            ...(entry.metadata || {})
+        }
+    });
+}
+
+/** Set or create a borrower's credit limit (local only — no Formbar transfer). */
+app.post('/admin/credit-limit', isAuthenticated, async (req, res) => {
+    const adminId = requireAdmin(req, res);
+    if (!adminId) return;
+    const returnTo = req.body.returnTo || '/admin';
+
+    let parsed;
+    try {
+        parsed = adminEdits.normalizeCreditLimitUpdate(req.body);
+    } catch (e) {
+        return adminRedirect(res, returnTo, { err: e.message });
+    }
+
+    db.get(
+        'SELECT current_limit, paid_off_count FROM credit_limits WHERE borrower_formbar_user_id = ?',
+        [parsed.formbarUserId],
+        async (err, existing) => {
+            if (err) {
+                return adminRedirect(res, returnTo, { err: 'Database error' });
+            }
+
+            const previousLimit = existing ? existing.current_limit : null;
+            const previousCount = existing ? existing.paid_off_count : null;
+            const sql = existing
+                ? 'UPDATE credit_limits SET current_limit = ?, paid_off_count = ? WHERE borrower_formbar_user_id = ?'
+                : 'INSERT INTO credit_limits (current_limit, paid_off_count, borrower_formbar_user_id) VALUES (?, ?, ?)';
+
+            db.run(sql, [parsed.currentLimit, parsed.paidOffCount, parsed.formbarUserId], async (updateErr) => {
+                if (updateErr) {
+                    return adminRedirect(res, returnTo, { err: 'Failed to update credit limit' });
+                }
+                try {
+                    await recordAdminAdjustment({
+                        idempotency_key: `admin_credit_limit:${parsed.formbarUserId}:${Date.now()}`,
+                        type: 'credit_limit_change',
+                        actor_formbar_user_id: adminId,
+                        counterparty_formbar_user_id: parsed.formbarUserId,
+                        requested_amount: parsed.currentLimit - (previousLimit || 0),
+                        net_amount: parsed.currentLimit,
+                        metadata: {
+                            previousLimit,
+                            newLimit: parsed.currentLimit,
+                            previousPaidOffCount: previousCount,
+                            newPaidOffCount: parsed.paidOffCount,
+                            note: parsed.note,
+                            created: !existing
+                        }
+                    });
+                } catch (ledgerErr) {
+                    console.error('Admin credit limit ledger error:', ledgerErr.message);
+                }
+                return adminRedirect(res, returnTo, {
+                    msg: `Credit limit for user #${parsed.formbarUserId} set to ${parsed.currentLimit}`
                 });
             });
         }
     );
+});
+
+/** Edit loan principal / balances / status (local only — no Formbar transfer). */
+app.post('/admin/loans/:id', isAuthenticated, async (req, res) => {
+    const adminId = requireAdmin(req, res);
+    if (!adminId) return;
+    const loanId = parseInt(req.params.id, 10);
+    const returnTo = req.body.returnTo || '/admin';
+    if (!loanId) {
+        return adminRedirect(res, returnTo, { err: 'Invalid loan id' });
+    }
+
+    db.get('SELECT * FROM credit_loans WHERE id = ?', [loanId], async (err, loan) => {
+        if (err) return adminRedirect(res, returnTo, { err: 'Database error' });
+        if (!loan) return adminRedirect(res, returnTo, { err: 'Loan not found' });
+
+        let next;
+        try {
+            next = adminEdits.normalizeLoanUpdate(loan, req.body);
+        } catch (e) {
+            return adminRedirect(res, returnTo, { err: e.message });
+        }
+
+        const finishUpdate = () => {
+            db.run(
+                `UPDATE credit_loans
+                 SET principal = ?, amount_owed = ?, amount_paid = ?, status = ?, paid_at = ?
+                 WHERE id = ?`,
+                [next.principal, next.amount_owed, next.amount_paid, next.status, next.paid_at, loanId],
+                async (updateErr) => {
+                    if (updateErr) {
+                        return adminRedirect(res, returnTo, { err: 'Failed to update loan' });
+                    }
+                    try {
+                        await recordAdminAdjustment({
+                            idempotency_key: `admin_loan:${loanId}:${Date.now()}`,
+                            type: 'adjustment',
+                            actor_formbar_user_id: adminId,
+                            counterparty_formbar_user_id: loan.borrower_formbar_user_id,
+                            related_loan_id: loanId,
+                            requested_amount: next.amount_owed - next.amount_paid,
+                            principal_component: next.principal,
+                            interest_component: Math.max(0, next.amount_owed - next.principal),
+                            metadata: {
+                                before: {
+                                    principal: loan.principal,
+                                    amount_owed: loan.amount_owed,
+                                    amount_paid: loan.amount_paid,
+                                    status: loan.status
+                                },
+                                after: next,
+                                note: req.body.note ? String(req.body.note).slice(0, 200) : null
+                            }
+                        });
+                    } catch (ledgerErr) {
+                        console.error('Admin loan ledger error:', ledgerErr.message);
+                    }
+                    return adminRedirect(res, returnTo, {
+                        msg: `Loan #${loanId} updated (${next.status}; paid ${next.amount_paid}/${next.amount_owed})`
+                    });
+                }
+            );
+        };
+
+        if (next.status === 'active' && loan.status !== 'active') {
+            db.get(
+                'SELECT id FROM credit_loans WHERE borrower_formbar_user_id = ? AND status = ? AND id != ?',
+                [loan.borrower_formbar_user_id, 'active', loanId],
+                (activeErr, other) => {
+                    if (activeErr) return adminRedirect(res, returnTo, { err: 'Database error' });
+                    if (other) {
+                        return adminRedirect(res, returnTo, {
+                            err: `Borrower already has active loan #${other.id}; void or pay it first`
+                        });
+                    }
+                    finishUpdate();
+                }
+            );
+        } else {
+            finishUpdate();
+        }
+    });
+});
+
+/** Void an active loan without Formbar refund (bookkeeping only). */
+app.post('/admin/loans/:id/void', isAuthenticated, async (req, res) => {
+    const adminId = requireAdmin(req, res);
+    if (!adminId) return;
+    req.body = { ...req.body, status: 'void' };
+    // Reuse loan edit handler by setting status
+    const loanId = parseInt(req.params.id, 10);
+    const returnTo = req.body.returnTo || '/admin';
+    if (!loanId) return adminRedirect(res, returnTo, { err: 'Invalid loan id' });
+
+    db.get('SELECT * FROM credit_loans WHERE id = ?', [loanId], async (err, loan) => {
+        if (err || !loan) return adminRedirect(res, returnTo, { err: 'Loan not found' });
+        const next = {
+            principal: loan.principal,
+            amount_owed: loan.amount_owed,
+            amount_paid: loan.amount_paid,
+            status: 'void',
+            paid_at: loan.paid_at
+        };
+        db.run(
+            'UPDATE credit_loans SET status = ? WHERE id = ?',
+            ['void', loanId],
+            async (updateErr) => {
+                if (updateErr) return adminRedirect(res, returnTo, { err: 'Failed to void loan' });
+                try {
+                    await recordAdminAdjustment({
+                        idempotency_key: `admin_loan_void:${loanId}:${Date.now()}`,
+                        type: 'adjustment',
+                        actor_formbar_user_id: adminId,
+                        counterparty_formbar_user_id: loan.borrower_formbar_user_id,
+                        related_loan_id: loanId,
+                        requested_amount: 0,
+                        metadata: { action: 'void', before: loan.status, after: next, note: req.body.note || null }
+                    });
+                } catch (ledgerErr) {
+                    console.error('Admin void ledger error:', ledgerErr.message);
+                }
+                return adminRedirect(res, returnTo, { msg: `Loan #${loanId} voided (local only)` });
+            }
+        );
+    });
 });
 
 app.get('/admin/analytics', isAuthenticated, async (req, res) => {
@@ -606,7 +838,9 @@ app.get('/admin/analytics/borrowers/:formbarUserId', isAuthenticated, async (req
             isAdmin: true,
             formbarUrl: FORMBAR_URL,
             profile,
-            userNames
+            userNames,
+            flash: req.query.msg || null,
+            flashError: req.query.err || null
         });
     } catch (err) {
         console.error('Borrower profile error:', err);

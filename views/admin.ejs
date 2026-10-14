@@ -5,84 +5,64 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FormBank - Admin</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
             background: linear-gradient(135deg, #2E7D32 0%, #1B5E20 50%, #0D3D10 100%);
             min-height: 100vh;
             padding: 20px;
         }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header, .section {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
         }
         .header {
-            background: white;
             padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
             display: flex;
             justify-content: space-between;
             align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
         }
-        .header h1 {
-            color: #333;
-            margin-bottom: 5px;
-        }
-        .header p {
-            color: #666;
-            font-size: 14px;
-        }
+        .header h1 { color: #333; margin-bottom: 5px; }
+        .header p { color: #666; font-size: 14px; }
         .nav-links a {
             color: #2E7D32;
             text-decoration: none;
             margin-left: 16px;
             font-weight: 500;
         }
-        .nav-links a:hover {
-            color: #1B5E20;
-            text-decoration: underline;
-        }
-        .section {
-            background: white;
-            padding: 25px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
+        .nav-links a:hover { color: #1B5E20; text-decoration: underline; }
+        .section { padding: 25px; }
         .section h2 {
             color: #333;
             margin-bottom: 16px;
             padding-bottom: 8px;
             border-bottom: 2px solid #2E7D32;
         }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 10px;
+        .note { font-size: 13px; color: #666; margin-bottom: 14px; }
+        .flash {
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-size: 14px;
         }
+        .flash-ok { background: #E8F5E9; color: #1B5E20; border: 1px solid #A5D6A7; }
+        .flash-err { background: #FFEBEE; color: #B71C1C; border: 1px solid #EF9A9A; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td {
             padding: 10px 12px;
             text-align: left;
             border-bottom: 1px solid #e0e0e0;
-            font-size: 14px;
+            font-size: 13px;
+            vertical-align: top;
         }
-        th {
-            background: #f8f9fa;
-            font-weight: 600;
-            color: #333;
-        }
-        tr:nth-child(even) {
-            background: #fafafa;
-        }
-        tr:hover {
-            background: #f1f8e9;
-        }
+        th { background: #f8f9fa; font-weight: 600; color: #333; }
+        tr:nth-child(even) { background: #fafafa; }
+        tr:hover { background: #f1f8e9; }
         .badge {
             display: inline-block;
             padding: 4px 8px;
@@ -92,11 +72,40 @@
             background: #E8F5E9;
             color: #1B5E20;
         }
-        .summary {
-            margin-top: 10px;
-            font-size: 14px;
-            color: #555;
+        .summary { margin-top: 10px; font-size: 14px; color: #555; }
+        .inline-form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+        .inline-form input, .inline-form select {
+            padding: 6px 8px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 13px;
+            width: 88px;
         }
+        .inline-form input.wide { width: 120px; }
+        .inline-form button, .btn {
+            background: #2E7D32;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .inline-form button:hover, .btn:hover { background: #1B5E20; }
+        .btn-danger { background: #C62828; }
+        .btn-danger:hover { background: #8E0000; }
+        .create-box {
+            background: #f8f9fa;
+            padding: 14px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+        }
+        .create-box h3 { font-size: 15px; margin-bottom: 10px; color: #333; }
+        a.link { color: #2E7D32; font-weight: 500; text-decoration: none; }
+        a.link:hover { text-decoration: underline; }
+        .status-active { color: #E65100; font-weight: 600; }
+        .status-paid { color: #2E7D32; font-weight: 600; }
+        .status-void, .status-superseded { color: #888; }
     </style>
 </head>
 <body>
@@ -116,33 +125,128 @@
             </div>
         </div>
 
+        <% if (typeof flash === 'string' && flash) { %>
+        <div class="flash flash-ok"><%= flash %></div>
+        <% } %>
+        <% if (typeof flashError === 'string' && flashError) { %>
+        <div class="flash flash-err"><%= flashError %></div>
+        <% } %>
+
         <div class="section">
-            <h2>Users – Credit Limits</h2>
+            <h2>Credit limits</h2>
+            <p class="note">Edits update FormBank bookkeeping only. They do <strong>not</strong> transfer digipogs on Formbar.</p>
+
+            <div class="create-box">
+                <h3>Set / create credit limit</h3>
+                <form class="inline-form" method="post" action="/admin/credit-limit">
+                    <input type="hidden" name="returnTo" value="/admin">
+                    <input class="wide" type="number" name="formbarUserId" min="1" placeholder="Formbar user ID" required>
+                    <input type="number" name="current_limit" min="1" placeholder="Limit" required>
+                    <input type="number" name="paid_off_count" min="0" value="0" placeholder="Increases">
+                    <input class="wide" type="text" name="note" placeholder="Note (optional)" maxlength="200">
+                    <button type="submit">Save limit</button>
+                </form>
+            </div>
+
             <% if (users && users.length > 0) { %>
             <table>
                 <thead>
                     <tr>
                         <th>User</th>
-                        <th>Credit Limit</th>
+                        <th>Limit</th>
+                        <th>Increases</th>
+                        <th>Edit</th>
                     </tr>
                 </thead>
                 <tbody>
                     <% users.forEach(u => { %>
                     <tr>
-                        <td><%- formbarUserLink(u.user_id, userNames) %></td>
+                        <td>
+                            <%- formbarUserLink(u.user_id, userNames) %>
+                            <div><a class="link" href="/admin/analytics/borrowers/<%= u.user_id %>">Profile</a></div>
+                        </td>
                         <td><%= u.current_limit %> dp</td>
+                        <td><%= u.paid_off_count != null ? u.paid_off_count : 0 %></td>
+                        <td>
+                            <form class="inline-form" method="post" action="/admin/credit-limit">
+                                <input type="hidden" name="returnTo" value="/admin">
+                                <input type="hidden" name="formbarUserId" value="<%= u.user_id %>">
+                                <input type="number" name="current_limit" min="1" value="<%= u.current_limit %>" required>
+                                <input type="number" name="paid_off_count" min="0" value="<%= u.paid_off_count != null ? u.paid_off_count : 0 %>">
+                                <button type="submit">Update</button>
+                            </form>
+                        </td>
                     </tr>
                     <% }); %>
                 </tbody>
             </table>
-            <div class="summary">
-                Total users in table: <strong><%= users.length %></strong>
-            </div>
+            <div class="summary">Total users in table: <strong><%= users.length %></strong></div>
             <% } else { %>
-            <p style="color:#666;">No credit data found yet.</p>
+            <p style="color:#666;">No credit data found yet. Use the form above to create a limit.</p>
+            <% } %>
+        </div>
+
+        <div class="section">
+            <h2>Loans &amp; balances</h2>
+            <p class="note">Adjust principal, amount owed, amount paid, or status. Paying a loan here does not collect digipogs from Formbar.</p>
+            <% if (typeof loans !== 'undefined' && loans && loans.length > 0) { %>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Loan</th>
+                        <th>Borrower</th>
+                        <th>Current</th>
+                        <th>Edit balances</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <% loans.forEach(function(l) { %>
+                    <tr>
+                        <td>
+                            #<%= l.id %><br>
+                            <span class="status-<%= l.status %>"><%= l.status %></span><br>
+                            <span style="color:#888;font-size:12px;"><%= l.created_at %></span>
+                        </td>
+                        <td>
+                            <%- formbarUserLink(l.borrower_formbar_user_id, userNames) %>
+                            <div><a class="link" href="/admin/analytics/borrowers/<%= l.borrower_formbar_user_id %>">Profile</a></div>
+                        </td>
+                        <td>
+                            P <%= l.principal %><br>
+                            Owed <%= l.amount_owed %><br>
+                            Paid <%= l.amount_paid %><br>
+                            Bal <%= l.amount_owed - l.amount_paid %>
+                        </td>
+                        <td>
+                            <form class="inline-form" method="post" action="/admin/loans/<%= l.id %>">
+                                <input type="hidden" name="returnTo" value="/admin">
+                                <input type="number" name="principal" min="1" value="<%= l.principal %>" title="Principal" required>
+                                <input type="number" name="amount_owed" min="0" value="<%= l.amount_owed %>" title="Amount owed" required>
+                                <input type="number" name="amount_paid" min="0" value="<%= l.amount_paid %>" title="Amount paid" required>
+                                <select name="status" title="Status">
+                                    <option value="active" <%= l.status === 'active' ? 'selected' : '' %>>active</option>
+                                    <option value="paid" <%= l.status === 'paid' ? 'selected' : '' %>>paid</option>
+                                    <option value="void" <%= l.status === 'void' ? 'selected' : '' %>>void</option>
+                                    <option value="superseded" <%= l.status === 'superseded' ? 'selected' : '' %>>superseded</option>
+                                </select>
+                                <button type="submit">Save</button>
+                            </form>
+                            <% if (l.status === 'active') { %>
+                            <form class="inline-form" method="post" action="/admin/loans/<%= l.id %>/void" style="margin-top:6px;" onsubmit="return confirm('Void loan #<%= l.id %> locally? This does not refund Formbar.');">
+                                <input type="hidden" name="returnTo" value="/admin">
+                                <button type="submit" class="btn-danger">Void</button>
+                            </form>
+                            <% } %>
+                        </td>
+                    </tr>
+                    <% }); %>
+                </tbody>
+            </table>
+            <div class="summary">Showing up to 200 loans.</div>
+            <% } else { %>
+            <p style="color:#666;">No loans found.</p>
             <% } %>
         </div>
     </div>
 </body>
 </html>
-

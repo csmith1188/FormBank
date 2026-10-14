@@ -29,9 +29,22 @@
         .card .label { font-size: 12px; color: #666; }
         .card .value { font-size: 20px; font-weight: 700; margin-top: 4px; }
         table { width: 100%; border-collapse: collapse; font-size: 14px; }
-        th, td { padding: 8px 10px; border-bottom: 1px solid #e0e0e0; text-align: left; }
+        th, td { padding: 8px 10px; border-bottom: 1px solid #e0e0e0; text-align: left; vertical-align: top; }
         th { background: #f8f9fa; }
         .muted { color: #888; font-size: 13px; }
+        .note { font-size: 13px; color: #666; margin-bottom: 12px; }
+        .flash { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
+        .flash-ok { background: #E8F5E9; color: #1B5E20; border: 1px solid #A5D6A7; }
+        .flash-err { background: #FFEBEE; color: #B71C1C; border: 1px solid #EF9A9A; }
+        .inline-form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+        .inline-form input, .inline-form select {
+            padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 13px; width: 90px;
+        }
+        .inline-form button, .btn {
+            background: #2E7D32; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;
+        }
+        .btn-danger { background: #C62828; }
+        .edit-box { background: #f8f9fa; padding: 14px; border-radius: 8px; margin-bottom: 16px; }
     </style>
 </head>
 <body>
@@ -48,6 +61,13 @@
             </div>
         </div>
 
+        <% if (typeof flash === 'string' && flash) { %>
+        <div class="flash flash-ok"><%= flash %></div>
+        <% } %>
+        <% if (typeof flashError === 'string' && flashError) { %>
+        <div class="flash flash-err"><%= flashError %></div>
+        <% } %>
+
         <div class="section">
             <h2>Summary</h2>
             <div class="cards">
@@ -58,27 +78,64 @@
                 <div class="card"><div class="label">Interest collected</div><div class="value"><%= profile.interestCollected %></div></div>
                 <div class="card"><div class="label">Utilization</div><div class="value"><%= (profile.utilization * 100).toFixed(1) %>%</div></div>
             </div>
+
+            <div class="edit-box">
+                <h2 style="border:none;margin:0 0 10px;padding:0;font-size:16px;">Edit credit limit</h2>
+                <p class="note">Local bookkeeping only — does not move Formbar digipogs.</p>
+                <form class="inline-form" method="post" action="/admin/credit-limit">
+                    <input type="hidden" name="returnTo" value="/admin/analytics/borrowers/<%= profile.userId %>">
+                    <input type="hidden" name="formbarUserId" value="<%= profile.userId %>">
+                    <input type="number" name="current_limit" min="1" value="<%= profile.creditLimit != null ? profile.creditLimit : 500 %>" required>
+                    <input type="number" name="paid_off_count" min="0" value="<%= profile.paidOffCount || 0 %>">
+                    <input type="text" name="note" placeholder="Note" maxlength="200" style="width:160px;">
+                    <button type="submit">Save limit</button>
+                </form>
+            </div>
         </div>
 
         <div class="section">
             <h2>Lending history</h2>
+            <p class="note">Edit balances or status below. Changes are recorded as ledger adjustments.</p>
             <% if (profile.loans && profile.loans.length) { %>
             <table>
                 <thead>
                     <tr>
-                        <th>ID</th><th>Principal</th><th>Owed</th><th>Paid</th><th>Status</th><th>Created</th><th>Paid at</th>
+                        <th>ID</th><th>Current</th><th>Status</th><th>Created</th><th>Edit</th>
                     </tr>
                 </thead>
                 <tbody>
                 <% profile.loans.forEach(function(l) { %>
                     <tr>
                         <td><%= l.id %></td>
-                        <td><%= l.principal %></td>
-                        <td><%= l.amount_owed %></td>
-                        <td><%= l.amount_paid %></td>
-                        <td><%= l.status %></td>
+                        <td>
+                            P <%= l.principal %><br>
+                            Owed <%= l.amount_owed %><br>
+                            Paid <%= l.amount_paid %><br>
+                            Bal <%= l.amount_owed - l.amount_paid %>
+                        </td>
+                        <td><%= l.status %><br><span class="muted"><%= l.paid_at || '' %></span></td>
                         <td><%= l.created_at %></td>
-                        <td><%= l.paid_at || '—' %></td>
+                        <td>
+                            <form class="inline-form" method="post" action="/admin/loans/<%= l.id %>">
+                                <input type="hidden" name="returnTo" value="/admin/analytics/borrowers/<%= profile.userId %>">
+                                <input type="number" name="principal" min="1" value="<%= l.principal %>" required>
+                                <input type="number" name="amount_owed" min="0" value="<%= l.amount_owed %>" required>
+                                <input type="number" name="amount_paid" min="0" value="<%= l.amount_paid %>" required>
+                                <select name="status">
+                                    <option value="active" <%= l.status === 'active' ? 'selected' : '' %>>active</option>
+                                    <option value="paid" <%= l.status === 'paid' ? 'selected' : '' %>>paid</option>
+                                    <option value="void" <%= l.status === 'void' ? 'selected' : '' %>>void</option>
+                                    <option value="superseded" <%= l.status === 'superseded' ? 'selected' : '' %>>superseded</option>
+                                </select>
+                                <button type="submit">Save</button>
+                            </form>
+                            <% if (l.status === 'active') { %>
+                            <form class="inline-form" method="post" action="/admin/loans/<%= l.id %>/void" style="margin-top:6px;" onsubmit="return confirm('Void loan #<%= l.id %> locally?');">
+                                <input type="hidden" name="returnTo" value="/admin/analytics/borrowers/<%= profile.userId %>">
+                                <button type="submit" class="btn-danger">Void</button>
+                            </form>
+                            <% } %>
+                        </td>
                     </tr>
                 <% }); %>
                 </tbody>
