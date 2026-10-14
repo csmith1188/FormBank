@@ -58,6 +58,8 @@
    # Leave blank to use LENDER_USER_ID until pool send/receive is on Formbar main.
    POOL_ID=
    CREDIT_LIMIT_STEP=500
+   # Formbar user whose transaction history powers the eBank analytics section
+   EBANK_USER_ID=57
    ```
 
 ### Environment variables
@@ -72,6 +74,7 @@
 | `LENDER_PIN` | PIN for loan transfers from the lender account, and for check payouts (lender PIN, or pool owner PIN when `POOL_ID` is set) |
 | `POOL_ID` | Optional Formbar digipog pool ID for check deposits and payouts. Blank or `0` falls back to `LENDER_USER_ID`. Do not use the developer pool `0`. |
 | `CREDIT_LIMIT_STEP` | Starting credit limit and amount added each repayment threshold (default: 500) |
+| `EBANK_USER_ID` | Formbar user ID for eBank analytics (default: `57`). Admin analytics reads this user’s Formbar transaction history via `GET /api/user/{id}/transactions`. |
 
 ### Run the app
 ```bash

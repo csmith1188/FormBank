@@ -15,6 +15,7 @@ const { migrate } = require('./db/migrate');
 const { getReconciliationReport } = require('./lib/reconcile');
 const analytics = require('./lib/analytics');
 const adminEdits = require('./lib/adminEdits');
+const ebankAnalytics = require('./lib/analytics/ebank');
 
 let ledger = null;
 
@@ -83,6 +84,8 @@ const LOGIN_REDIRECT_URL = `${THIS_URL}/login`;
 const API_KEY = process.env.API_KEY || 'your_api_key';
 const LENDER_USER_ID = parseInt(process.env.LENDER_USER_ID) || 1;
 const LENDER_PIN = parseInt(process.env.LENDER_PIN) || 3639; // PIN must be a number per Formbar docs
+/** Formbar user ID for eBank analytics (transaction history source). */
+const EBANK_USER_ID = Math.max(1, parseInt(process.env.EBANK_USER_ID, 10) || 57);
 /** Formbar digipog pool for check deposits/payouts. Blank/0 falls back to the lender user. */
 const POOL_ID = parseInt(process.env.POOL_ID, 10);
 const USE_CHECK_POOL = Number.isInteger(POOL_ID) && POOL_ID > 0;
@@ -737,6 +740,27 @@ app.post('/admin/loans/:id/void', isAuthenticated, async (req, res) => {
     });
 });
 
+/** Load eBank analytics from Formbar transaction history for EBANK_USER_ID. */
+async function loadEbankAnalytics() {
+    try {
+        const [profile, txResult] = await Promise.all([
+            formbarApi.getUserProfile(FORMBAR_API_URL, API_KEY, EBANK_USER_ID),
+            formbarApi.getUserTransactions(FORMBAR_API_URL, API_KEY, EBANK_USER_ID)
+        ]);
+        const user = profile || await formbarApi.getUserById(FORMBAR_API_URL, API_KEY, EBANK_USER_ID);
+        if (!txResult.ok) {
+            return ebankAnalytics.unavailableEbank(
+                EBANK_USER_ID,
+                txResult.error || 'Formbar transaction history unavailable'
+            );
+        }
+        return ebankAnalytics.buildEbankAnalytics(EBANK_USER_ID, user, txResult.transactions);
+    } catch (err) {
+        console.error('eBank analytics error:', err.message);
+        return ebankAnalytics.unavailableEbank(EBANK_USER_ID, err.message);
+    }
+}
+
 app.get('/admin/analytics', isAuthenticated, async (req, res) => {
     const userId = requireAdmin(req, res);
     if (!userId) return;
@@ -758,7 +782,8 @@ app.get('/admin/analytics', isAuthenticated, async (req, res) => {
             users,
             risk,
             reconciliation,
-            snapshots
+            snapshots,
+            ebank
         ] = await Promise.all([
             analytics.getSummary(db, dateRange),
             analytics.getLoanAnalytics(db, dateRange),
@@ -768,7 +793,8 @@ app.get('/admin/analytics', isAuthenticated, async (req, res) => {
             analytics.getUserAnalytics(db, dateRange),
             analytics.getRiskReport(db),
             getReconciliationReport(db),
-            analytics.getRecentSnapshots(db, 90)
+            analytics.getRecentSnapshots(db, 90),
+            loadEbankAnalytics()
         ]);
 
         const nameIds = [];
@@ -778,7 +804,12 @@ app.get('/admin/analytics', isAuthenticated, async (req, res) => {
         (users.topCheckUsers || []).forEach((u) => nameIds.push(u.user_id));
         (checks.topWriters || []).forEach((u) => nameIds.push(u.user_id));
         (checks.topRecipients || []).forEach((u) => nameIds.push(u.user_id));
-        nameIds.push(userId);
+        (ebank.topCounterparties || []).forEach((u) => nameIds.push(u.userId));
+        (ebank.recentTransactions || []).forEach((t) => {
+            if (t.fromId != null) nameIds.push(t.fromId);
+            if (t.toId != null) nameIds.push(t.toId);
+        });
+        nameIds.push(userId, EBANK_USER_ID);
 
         const userNames = await resolveUserNames(nameIds);
         res.render('admin-analytics', {
@@ -797,6 +828,7 @@ app.get('/admin/analytics', isAuthenticated, async (req, res) => {
             risk,
             reconciliation,
             snapshots,
+            ebank,
             userNames,
             ledgerCoverageNote: 'Ledger coverage begins at migration; earlier repayments may be aggregated into a single legacy event per loan.'
         });

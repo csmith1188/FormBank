@@ -172,7 +172,84 @@ function transferDigipogs(socket, from, to, amount, memo, pin, options = false) 
     });
 }
 
+/**
+ * Fetch digipog transaction history for a Formbar user.
+ * GET /api/user/{id}/transactions (also tries /api/v1/... for newer Formbar).
+ * @returns {Promise<{ok: boolean, transactions?: any, error?: string, status?: number}>}
+ */
+async function getUserTransactions(formbarBaseUrl, apiKey, userId) {
+    if (userId == null || userId === '') {
+        return { ok: false, error: 'Missing user id' };
+    }
+    const base = String(formbarBaseUrl || '').replace(/\/$/, '');
+    if (!base) return { ok: false, error: 'Missing Formbar URL' };
+
+    const paths = [
+        `${base}/api/user/${encodeURIComponent(userId)}/transactions`,
+        `${base}/api/v1/user/${encodeURIComponent(userId)}/transactions`
+    ];
+
+    let lastError = 'No response';
+    for (const url of paths) {
+        try {
+            const res = await fetch(url, {
+                headers: {
+                    api: apiKey || '',
+                    API: apiKey || '',
+                    Accept: 'application/json'
+                }
+            });
+            if (!res.ok) {
+                lastError = `HTTP ${res.status}`;
+                if (res.status === 404) continue;
+                return { ok: false, error: lastError, status: res.status };
+            }
+            const data = await res.json();
+            return { ok: true, transactions: data, status: res.status };
+        } catch (err) {
+            lastError = err.message || 'Request failed';
+        }
+    }
+    return { ok: false, error: lastError };
+}
+
+/**
+ * Fetch full user profile (may include digipogs balance depending on Formbar version).
+ */
+async function getUserProfile(formbarBaseUrl, apiKey, userId) {
+    if (userId == null || userId === '') return null;
+    const base = String(formbarBaseUrl || '').replace(/\/$/, '');
+    if (!base) return null;
+
+    const paths = [
+        `${base}/api/user/${encodeURIComponent(userId)}`,
+        `${base}/api/v1/user/${encodeURIComponent(userId)}`
+    ];
+
+    for (const url of paths) {
+        try {
+            const res = await fetch(url, {
+                headers: {
+                    api: apiKey || '',
+                    API: apiKey || '',
+                    Accept: 'application/json'
+                }
+            });
+            if (!res.ok) continue;
+            const data = await res.json();
+            const user = data && data.data ? data.data : data;
+            if (!user || user.error) continue;
+            return user;
+        } catch (_) {
+            // try next path
+        }
+    }
+    return null;
+}
+
 module.exports = {
     transferDigipogs,
-    getUserById
+    getUserById,
+    getUserTransactions,
+    getUserProfile
 };

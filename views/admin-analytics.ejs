@@ -236,6 +236,92 @@
         </div>
 
         <div class="section">
+            <h2>eBank analytics</h2>
+            <p class="note">
+                Read-only Formbar transaction history for eBank user
+                <%- formbarUserLink(ebank.ebankUserId, userNames) %>
+                (EBANK_USER_ID=<%= ebank.ebankUserId %>).
+                This is external Formbar data, not FormBank’s local ledger.
+            </p>
+            <% if (!ebank.available) { %>
+            <p class="empty">Unable to load eBank history: <%= ebank.error || 'unknown error' %></p>
+            <% } else { %>
+            <div class="cards">
+                <div class="card">
+                    <div class="label">Formbar digipogs</div>
+                    <div class="value"><%= ebank.digipogs != null ? ebank.digipogs : '—' %></div>
+                    <div class="sub"><%= ebank.displayName %></div>
+                </div>
+                <div class="card">
+                    <div class="label">Transactions</div>
+                    <div class="value"><%= ebank.transactionCount %></div>
+                </div>
+                <div class="card revenue">
+                    <div class="label">Inflow (received)</div>
+                    <div class="value"><%= ebank.inflow %></div>
+                </div>
+                <div class="card expense">
+                    <div class="label">Outflow (sent)</div>
+                    <div class="value"><%= ebank.outflow %></div>
+                </div>
+                <div class="card">
+                    <div class="label">Net (in − out)</div>
+                    <div class="value"><%= ebank.net %></div>
+                </div>
+                <div class="card">
+                    <div class="label">FormBank-related memos</div>
+                    <div class="value"><%= ebank.formbankRelatedCount %></div>
+                </div>
+            </div>
+            <div class="charts">
+                <div>
+                    <h3>eBank activity over time</h3>
+                    <div class="chart-box"><canvas id="chartEbank"></canvas></div>
+                    <p id="emptyEbank" class="empty" style="display:none;">No dated eBank transactions.</p>
+                </div>
+            </div>
+            <% if (ebank.topCounterparties && ebank.topCounterparties.length) { %>
+            <h3>Top counterparties</h3>
+            <table>
+                <thead><tr><th>User</th><th>Transfers</th><th>Volume</th></tr></thead>
+                <tbody>
+                <% ebank.topCounterparties.forEach(function(c) { %>
+                    <tr>
+                        <td><%- formbarUserLink(c.userId, userNames) %></td>
+                        <td><%= c.count %></td>
+                        <td><%= c.amount %></td>
+                    </tr>
+                <% }); %>
+                </tbody>
+            </table>
+            <% } %>
+            <% if (ebank.recentTransactions && ebank.recentTransactions.length) { %>
+            <h3>Recent Formbar transactions</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>When</th><th>From</th><th>To</th><th>Amount</th><th>Reason</th>
+                    </tr>
+                </thead>
+                <tbody>
+                <% ebank.recentTransactions.slice(0, 50).forEach(function(t) { %>
+                    <tr>
+                        <td><%= t.createdAt || '—' %></td>
+                        <td><%- t.fromId != null ? formbarUserLink(t.fromId, userNames) : '—' %></td>
+                        <td><%- t.toId != null ? formbarUserLink(t.toId, userNames) : '—' %></td>
+                        <td><%= t.amount %></td>
+                        <td><%= t.reason ? String(t.reason).slice(0, 120) : '' %></td>
+                    </tr>
+                <% }); %>
+                </tbody>
+            </table>
+            <% } else { %>
+            <p class="empty">No transactions returned for this eBank user.</p>
+            <% } %>
+            <% } %>
+        </div>
+
+        <div class="section">
             <h2>Charts</h2>
             <div class="charts">
                 <div>
@@ -455,6 +541,7 @@
         const ageDist = <%- JSON.stringify(loans.ageDistribution || {}) %>;
         const creditDist = <%- JSON.stringify(credit.distribution || {}) %>;
         const checkActivity = <%- JSON.stringify(checks.activityOverTime || []) %>;
+        const ebankActivity = <%- JSON.stringify((ebank && ebank.activityOverTime) || []) %>;
 
         function mergeDays(a, b) {
             const map = {};
@@ -564,6 +651,28 @@
                             borderColor: orange,
                             tension: 0.2
                         }]
+                    },
+                    options: { responsive: true, maintainAspectRatio: false }
+                });
+            }
+        })();
+
+        (function() {
+            const canvas = document.getElementById('chartEbank');
+            const empty = document.getElementById('emptyEbank');
+            if (!canvas) return;
+            if (!ebankActivity.length) {
+                if (empty) empty.style.display = 'block';
+                canvas.style.display = 'none';
+            } else {
+                new Chart(canvas, {
+                    type: 'line',
+                    data: {
+                        labels: ebankActivity.map(r => r.day),
+                        datasets: [
+                            { label: 'Inflow', data: ebankActivity.map(r => r.inflow), borderColor: blue, tension: 0.2 },
+                            { label: 'Outflow', data: ebankActivity.map(r => r.outflow), borderColor: red, tension: 0.2 }
+                        ]
                     },
                     options: { responsive: true, maintainAspectRatio: false }
                 });
