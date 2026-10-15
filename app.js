@@ -38,10 +38,10 @@ const db = new sqlite3.Database('./db/database.db', (err) => {
                             db.run('ALTER TABLE checks RENAME TO checks_backup');
                             db.run('CREATE TABLE checks (id INTEGER PRIMARY KEY AUTOINCREMENT, sender_formbar_user_id INTEGER NOT NULL, receiver_formbar_user_id INTEGER, amount INTEGER NOT NULL, fee_charged INTEGER NOT NULL, status TEXT NOT NULL DEFAULT \'failed\', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, memo TEXT, pin_for_redemption TEXT)');
                             db.run('INSERT INTO checks (id, sender_formbar_user_id, receiver_formbar_user_id, amount, fee_charged, status, created_at, memo) SELECT id, sender_formbar_user_id, receiver_formbar_user_id, amount, fee_charged, status, created_at, memo FROM checks_backup');
-                            db.run('DROP TABLE checks_backup', () => {});
+                            db.run('DROP TABLE checks_backup', () => { });
                         });
                     } else if (!hasPinCol) {
-                        db.run('ALTER TABLE checks ADD COLUMN pin_for_redemption TEXT', () => {});
+                        db.run('ALTER TABLE checks ADD COLUMN pin_for_redemption TEXT', () => { });
                     }
                 });
             }
@@ -56,10 +56,10 @@ const db = new sqlite3.Database('./db/database.db', (err) => {
                     if (!cols.some(c => c.name === 'formbar_id')) {
                         db.run('ALTER TABLE users ADD COLUMN formbar_id INTEGER', (alterErr) => {
                             if (alterErr) return console.error('Error adding formbar_id to users:', alterErr);
-                            db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_formbar_id ON users(formbar_id)', () => {});
+                            db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_formbar_id ON users(formbar_id)', () => { });
                         });
                     } else {
-                        db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_formbar_id ON users(formbar_id)', () => {});
+                        db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_formbar_id ON users(formbar_id)', () => { });
                     }
                 });
             }
@@ -78,7 +78,7 @@ const db = new sqlite3.Database('./db/database.db', (err) => {
 //Constants
 const PORT = process.env.PORT || 3000;
 const SESSION_SECRET = process.env.SESSION_SECRET || 'your_secret_key';
-const AUTH_URL = process.env.AUTH_URL || 'http://localhost:420/oauth';
+const AUTH_URL = process.env.AUTH_URL || 'http://localhost:420';
 const THIS_URL = process.env.THIS_URL || `http://localhost:${PORT}`;
 const LOGIN_REDIRECT_URL = `${THIS_URL}/login`;
 const API_KEY = process.env.API_KEY || 'your_api_key';
@@ -120,7 +120,7 @@ function escapeHtml(str) {
 }
 
 /** Render a Formbar profile link for a user ID (username from map, or User #id fallback). */
-app.locals.formbarUserLink = function(formbarUserId, userNames) {
+app.locals.formbarUserLink = function (formbarUserId, userNames) {
     if (formbarUserId == null || formbarUserId === '') return 'Anyone (uncashed)';
     const id = Number(formbarUserId);
     const name = (userNames && (userNames[id] || userNames[String(id)])) || `User #${id}`;
@@ -146,7 +146,7 @@ function getCreditLimit(userId, callback) {
         if (err) return callback(err, null);
         if (!row) {
             // Initialize with default limit
-            db.run('INSERT INTO credit_limits (borrower_formbar_user_id, current_limit, paid_off_count) VALUES (?, ?, 0)', [userId, CREDIT_LIMIT_STEP], function(err) {
+            db.run('INSERT INTO credit_limits (borrower_formbar_user_id, current_limit, paid_off_count) VALUES (?, ?, 0)', [userId, CREDIT_LIMIT_STEP], function (err) {
                 if (err) return callback(err, null);
                 callback(null, { current_limit: CREDIT_LIMIT_STEP, paid_off_count: 0 });
             });
@@ -170,7 +170,7 @@ function createLoan(userId, principal, callback) {
     db.run(
         'INSERT INTO credit_loans (borrower_formbar_user_id, principal, interest_rate, amount_owed, amount_paid, status) VALUES (?, ?, ?, ?, 0, ?)',
         [userId, principal, interestRate, amountOwed, 'active'],
-        function(err) {
+        function (err) {
             if (err) return callback(err, null);
             callback(null, { id: this.lastID, principal, amountOwed });
         }
@@ -182,17 +182,17 @@ function updateLoanPayment(loanId, additionalPayment, callback) {
         if (err) return callback(err);
         const newAmountPaid = loan.amount_paid + additionalPayment;
         const isPaid = newAmountPaid >= loan.amount_owed;
-        
+
         const updateData = {
             amount_paid: newAmountPaid,
             status: isPaid ? 'paid' : 'active',
             paid_at: isPaid ? new Date().toISOString() : null
         };
-        
+
         db.run(
             'UPDATE credit_loans SET amount_paid = ?, status = ?, paid_at = ? WHERE id = ?',
             [updateData.amount_paid, updateData.status, updateData.paid_at, loanId],
-            function(err) {
+            function (err) {
                 if (err) return callback(err);
                 callback(null, { isPaid, newAmountPaid, amountOwed: loan.amount_owed });
             }
@@ -302,7 +302,7 @@ function createCheck(senderId, receiverId, amount, fee, status, memo, pinForRede
     db.run(
         'INSERT INTO checks (sender_formbar_user_id, receiver_formbar_user_id, amount, fee_charged, status, memo, pin_for_redemption) VALUES (?, ?, ?, ?, ?, ?, ?)',
         [senderId, receiverId == null ? null : receiverId, amount, fee, status, memo || null, pinForRedemption || null],
-        function(err) {
+        function (err) {
             if (err) return callback(err, null);
             callback(null, { id: this.lastID });
         }
@@ -310,7 +310,7 @@ function createCheck(senderId, receiverId, amount, fee, status, memo, pinForRede
 }
 
 function clearCheckPin(checkId, callback) {
-    db.run('UPDATE checks SET pin_for_redemption = NULL WHERE id = ?', [checkId], callback || (() => {}));
+    db.run('UPDATE checks SET pin_for_redemption = NULL WHERE id = ?', [checkId], callback || (() => { }));
 }
 
 function getChecksForUser(userId, callback) {
@@ -334,7 +334,7 @@ function claimUncashedCheck(checkId, userId, callback) {
     db.run(
         'UPDATE checks SET receiver_formbar_user_id = ? WHERE id = ? AND receiver_formbar_user_id IS NULL',
         [userId, checkId],
-        function(err) {
+        function (err) {
             if (err) return callback(err, false);
             callback(null, this.changes > 0);
         }
@@ -369,7 +369,7 @@ function getTopCreditLimits(limit, callback) {
 
 /** Upsert local users cache keyed by Formbar ID + display name. */
 function upsertFormbarUser(formbarId, displayName, callback) {
-    const done = typeof callback === 'function' ? callback : () => {};
+    const done = typeof callback === 'function' ? callback : () => { };
     if (formbarId == null || !displayName) return done();
 
     db.get('SELECT id FROM users WHERE formbar_id = ?', [formbarId], (err, byFormbar) => {
@@ -434,7 +434,7 @@ async function resolveUserNames(ids) {
 // Routes
 app.get('/', isAuthenticated, (req, res) => {
     const userId = req.session.userId;
-    res.render('index', { 
+    res.render('index', {
         user: req.session.user,
         isAdmin: userId === LENDER_USER_ID
     });
@@ -453,7 +453,7 @@ app.get('/login', (req, res) => {
             }
             console.log(`User ${tokenData.displayName} (Formbar ID ${tokenData.id}) saved to database.`);
         });
-        
+
         res.redirect('/');
 
     } else {
@@ -1065,7 +1065,7 @@ app.post('/credit/borrow', isAuthenticated, async (req, res) => {
                         }
                     }
                 } catch (ledgerErr) {
-                    db.run('DELETE FROM credit_loans WHERE id = ?', [loan.id], () => {});
+                    db.run('DELETE FROM credit_loans WHERE id = ?', [loan.id], () => { });
                     return res.status(500).json({ error: 'Failed to record pending loan transfer' });
                 }
 
@@ -1105,7 +1105,7 @@ app.post('/credit/borrow', isAuthenticated, async (req, res) => {
                     if (ledger && ledgerId) {
                         await ledger.markFailed(ledgerId, result.error || 'Transfer failed', 'failure');
                     }
-                    db.run('DELETE FROM credit_loans WHERE id = ?', [loan.id], () => {});
+                    db.run('DELETE FROM credit_loans WHERE id = ?', [loan.id], () => { });
 
                     const errorMsg = result.error || 'Transfer failed';
                     if (errorMsg.toLowerCase().includes('locked') ||
@@ -1287,7 +1287,7 @@ async function processLoanRepayment(req, res, userId, activeLoan, repaymentAmoun
                 message: (isFull
                     ? `Full repayment of ${repaymentAmount} digipogs processed. Loan paid off!`
                     : `Repayment of ${repaymentAmount} digipogs processed.` +
-                        (paymentResult.isPaid ? ' Loan paid off!' : '')) +
+                    (paymentResult.isPaid ? ' Loan paid off!' : '')) +
                     (limitIncreased ? ' Your credit limit has increased.' : '')
             });
         });
@@ -1341,7 +1341,7 @@ app.get('/checks/:id', (req, res, next) => {
                 return res.status(404).send('Check not found');
             }
             if (check.receiver_formbar_user_id != null || check.status !== 'uncashed') {
-                return res.status(400).redirect('/checks/' + checkId );
+                return res.status(400).redirect('/checks/' + checkId);
             }
             claimUncashedCheck(checkId, receiverId, (errClaim, claimed) => {
                 if (errClaim) {
@@ -1353,7 +1353,7 @@ app.get('/checks/:id', (req, res, next) => {
                 // Funds already sit at FormBank from write time; pay receiver from FormBank.
                 redeemCheckPayout(check, receiverId).then((result) => {
                     clearCheckPin(checkId);
-                    setCheckStatus(checkId, result.success ? 'completed' : 'funded_unpaid', () => {});
+                    setCheckStatus(checkId, result.success ? 'completed' : 'funded_unpaid', () => { });
                     const safeCheck = { ...check };
                     delete safeCheck.pin_for_redemption;
                     resolveUserNames([receiverId, check.sender_formbar_user_id]).then((userNames) => {
@@ -1404,7 +1404,7 @@ app.get('/checks/:id', (req, res, next) => {
                 // Funds already sit at FormBank from write time; pay receiver from FormBank.
                 redeemCheckPayout(check, userId).then((result) => {
                     clearCheckPin(checkId);
-                    setCheckStatus(checkId, result.success ? 'completed' : 'funded_unpaid', () => {});
+                    setCheckStatus(checkId, result.success ? 'completed' : 'funded_unpaid', () => { });
                     getCheckById(checkId, (err2, updated) => {
                         if (err2 || !updated) {
                             return res.status(500).send('Error loading check');
@@ -1540,6 +1540,7 @@ app.post('/checks/write', isAuthenticated, async (req, res) => {
     const payout = checkPayoutFromFormBank(amount);
     const chargeTotal = checkChargeToFormBank(amount);
     const isFormBank = senderId === LENDER_USER_ID;
+    const toLender = receiverId === LENDER_USER_ID
     const memoLabel = memo || `Check: ${amount} digipogs`;
 
     // Create check row early so ledger can reference check id (pending status until funded)
@@ -1559,7 +1560,7 @@ app.post('/checks/write', isAuthenticated, async (req, res) => {
             return res.status(500).json({ error: 'Failed to record pending check deposit' });
         }
 
-        const doDeposit = isFormBank
+        const doDeposit = isFormBank || toLender
             ? Promise.resolve({ success: true, outcome: 'success' })
             : formbarApi.transferDigipogs(
                 socket,
@@ -1635,7 +1636,7 @@ app.post('/checks/write', isAuthenticated, async (req, res) => {
                     payoutLedgerId = payoutPending.id;
                 }
             } catch (e) {
-                setCheckStatus(checkId, 'funded_unpaid', () => {});
+                setCheckStatus(checkId, 'funded_unpaid', () => { });
                 return res.status(500).json({
                     error: 'Deposit succeeded but failed to record payout — contact support',
                     reconciliation: true,
@@ -1645,11 +1646,11 @@ app.post('/checks/write', isAuthenticated, async (req, res) => {
 
             formbarApi.transferDigipogs(
                 socket,
-                CHECK_FUNDS,
+                senderId,
                 receiverId,
                 payout,
                 memoLabel,
-                LENDER_PIN
+                toLender ? pin : LENDER_PIN
             ).then(async (result2) => {
                 if (!result2.success) {
                     const outcome = result2.outcome || 'failure';
@@ -1664,7 +1665,7 @@ app.post('/checks/write', isAuthenticated, async (req, res) => {
                             await ledger.markFailed(payoutLedgerId, result2.error || 'Payout failed', 'failure');
                         }
                     }
-                    setCheckStatus(checkId, 'funded_unpaid', () => {});
+                    setCheckStatus(checkId, 'funded_unpaid', () => { });
                     return res.status(500).json({
                         error: result2.error || `${CHECK_FUNDS_LABEL} payout to receiver failed. Deposit is at FormBank — contact support.`,
                         reconciliation: true,
@@ -1708,10 +1709,12 @@ app.post('/checks/write', isAuthenticated, async (req, res) => {
                     res.json({
                         success: true,
                         checkId,
-                        charged: isFormBank ? 0 : chargeTotal,
+                        charged: toLender ? payout : (isFormBank ? 0 : chargeTotal),
                         fee,
                         payout,
-                        message: isFormBank
+                        message: toLender
+                            ? `Sent ${payout} digipogs directly to the lender (receiver nets ${amount}).`
+                            : isFormBank
                             ? `Paid ${payout} digipogs from ${CHECK_FUNDS_LABEL} so receiver nets ${amount}.`
                             : `Charged ${chargeTotal}; ${CHECK_FUNDS_LABEL} paid ${payout} (receiver nets ${amount}); FormBank keeps ~${fee} (5%).`
                     });
@@ -1797,11 +1800,11 @@ socket.on('disconnect', () => {
 // Debug: Log all socket events to help identify transfer responses
 if (process.env.DEBUG_SOCKET === 'true') {
     const originalEmit = socket.emit.bind(socket);
-    socket.emit = function(event, ...args) {
+    socket.emit = function (event, ...args) {
         console.log(`[SOCKET EMIT] ${event}`, args);
         return originalEmit(event, ...args);
     };
-    
+
     socket.onAny((event, ...args) => {
         if (!['connect', 'disconnect'].includes(event)) {
             console.log(`[SOCKET EVENT] ${event}`, args);
