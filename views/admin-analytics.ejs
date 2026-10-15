@@ -235,6 +235,7 @@
             </div>
         </div>
 
+        <% if (ebank && ebank.enabled) { %>
         <div class="section">
             <h2>eBank analytics</h2>
             <p class="note">
@@ -245,6 +246,10 @@
             </p>
             <% if (!ebank.available) { %>
             <p class="empty">Unable to load eBank history: <%= ebank.error || 'unknown error' %></p>
+            <p class="note">
+                Formbar only returns transactions when the request uses that user’s own API key
+                (or a manager key). Check <code>EBANK_API_KEY</code> in <code>.env</code>, then restart FormBank.
+            </p>
             <% } else { %>
             <div class="cards">
                 <div class="card">
@@ -320,6 +325,7 @@
             <% } %>
             <% } %>
         </div>
+        <% } %>
 
         <div class="section">
             <h2>Charts</h2>

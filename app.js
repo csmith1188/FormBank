@@ -84,8 +84,15 @@ const LOGIN_REDIRECT_URL = `${THIS_URL}/login`;
 const API_KEY = process.env.API_KEY || 'your_api_key';
 const LENDER_USER_ID = parseInt(process.env.LENDER_USER_ID) || 1;
 const LENDER_PIN = parseInt(process.env.LENDER_PIN) || 3639; // PIN must be a number per Formbar docs
-/** Formbar user ID for eBank analytics (transaction history source). */
-const EBANK_USER_ID = Math.max(1, parseInt(process.env.EBANK_USER_ID, 10) || 28);
+/**
+ * eBank analytics is opt-in: both EBANK_USER_ID and EBANK_API_KEY must be set in .env.
+ * Without them the admin analytics page omits the eBank section and skips Formbar calls.
+ */
+const EBANK_API_KEY = (process.env.EBANK_API_KEY || '').trim();
+const EBANK_USER_ID_PARSED = parseInt(process.env.EBANK_USER_ID, 10);
+const EBANK_ENABLED = Number.isInteger(EBANK_USER_ID_PARSED) && EBANK_USER_ID_PARSED > 0 && !!EBANK_API_KEY;
+const EBANK_USER_ID = EBANK_ENABLED ? EBANK_USER_ID_PARSED : null;
+const EBANK_USES_DEDICATED_KEY = EBANK_ENABLED;
 /** Formbar digipog pool for check deposits/payouts. Blank/0 falls back to the lender user. */
 const POOL_ID = parseInt(process.env.POOL_ID, 10);
 const USE_CHECK_POOL = Number.isInteger(POOL_ID) && POOL_ID > 0;
@@ -742,22 +749,38 @@ app.post('/admin/loans/:id/void', isAuthenticated, async (req, res) => {
 
 /** Load eBank analytics from Formbar transaction history for EBANK_USER_ID. */
 async function loadEbankAnalytics() {
+    if (!EBANK_ENABLED) {
+        return { enabled: false };
+    }
     try {
         const [profile, txResult] = await Promise.all([
-            formbarApi.getUserProfile(FORMBAR_API_URL, API_KEY, EBANK_USER_ID),
-            formbarApi.getUserTransactions(FORMBAR_API_URL, API_KEY, EBANK_USER_ID)
+            formbarApi.getUserProfile(FORMBAR_API_URL, EBANK_API_KEY, EBANK_USER_ID),
+            formbarApi.getUserTransactions(FORMBAR_API_URL, EBANK_API_KEY, EBANK_USER_ID, {
+                usedDedicatedKey: EBANK_USES_DEDICATED_KEY
+            })
         ]);
-        const user = profile || await formbarApi.getUserById(FORMBAR_API_URL, API_KEY, EBANK_USER_ID);
+        const user = profile
+            || await formbarApi.getUserById(FORMBAR_API_URL, EBANK_API_KEY, EBANK_USER_ID)
+            || await formbarApi.getUserById(FORMBAR_API_URL, API_KEY, EBANK_USER_ID);
         if (!txResult.ok) {
-            return ebankAnalytics.unavailableEbank(
-                EBANK_USER_ID,
-                txResult.error || 'Formbar transaction history unavailable'
-            );
+            return {
+                enabled: true,
+                ...ebankAnalytics.unavailableEbank(
+                    EBANK_USER_ID,
+                    txResult.error || 'Formbar transaction history unavailable'
+                )
+            };
         }
-        return ebankAnalytics.buildEbankAnalytics(EBANK_USER_ID, user, txResult.transactions);
+        return {
+            enabled: true,
+            ...ebankAnalytics.buildEbankAnalytics(EBANK_USER_ID, user, txResult.transactions)
+        };
     } catch (err) {
         console.error('eBank analytics error:', err.message);
-        return ebankAnalytics.unavailableEbank(EBANK_USER_ID, err.message);
+        return {
+            enabled: true,
+            ...ebankAnalytics.unavailableEbank(EBANK_USER_ID, err.message)
+        };
     }
 }
 
@@ -804,12 +827,15 @@ app.get('/admin/analytics', isAuthenticated, async (req, res) => {
         (users.topCheckUsers || []).forEach((u) => nameIds.push(u.user_id));
         (checks.topWriters || []).forEach((u) => nameIds.push(u.user_id));
         (checks.topRecipients || []).forEach((u) => nameIds.push(u.user_id));
-        (ebank.topCounterparties || []).forEach((u) => nameIds.push(u.userId));
-        (ebank.recentTransactions || []).forEach((t) => {
-            if (t.fromId != null) nameIds.push(t.fromId);
-            if (t.toId != null) nameIds.push(t.toId);
-        });
-        nameIds.push(userId, EBANK_USER_ID);
+        if (ebank.enabled) {
+            (ebank.topCounterparties || []).forEach((u) => nameIds.push(u.userId));
+            (ebank.recentTransactions || []).forEach((t) => {
+                if (t.fromId != null) nameIds.push(t.fromId);
+                if (t.toId != null) nameIds.push(t.toId);
+            });
+            nameIds.push(EBANK_USER_ID);
+        }
+        nameIds.push(userId);
 
         const userNames = await resolveUserNames(nameIds);
         res.render('admin-analytics', {

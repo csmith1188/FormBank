@@ -173,39 +173,122 @@ function transferDigipogs(socket, from, to, amount, memo, pin, options = false) 
 }
 
 /**
+ * Build Formbar HTTP auth headers.
+ * Formbar reads `req.headers.api` (Node lowercases header names).
+ */
+function formbarAuthHeaders(apiKey) {
+    const key = String(apiKey || '').trim();
+    return {
+        api: key,
+        Accept: 'application/json'
+    };
+}
+
+function authErrorHint(status, usedDedicatedKey) {
+    if (status === 401) {
+        return usedDedicatedKey
+            ? 'HTTP 401 — Formbar rejected EBANK_API_KEY (invalid, or eBank account email not verified). Copy a fresh API key from that user\'s Formbar profile.'
+            : 'HTTP 401 — Formbar requires the eBank user\'s own API key (or a manager key). Set EBANK_API_KEY in .env to Gabee\'s API key from Formbar → Profile.';
+    }
+    if (status === 403) {
+        return usedDedicatedKey
+            ? 'HTTP 403 — authenticated but not allowed to view these transactions.'
+            : 'HTTP 403 — FormBank API_KEY can only view its own history. Set EBANK_API_KEY to the eBank user\'s Formbar API key.';
+    }
+    return `HTTP ${status}`;
+}
+
+/**
  * Fetch digipog transaction history for a Formbar user.
- * GET /api/user/{id}/transactions (also tries /api/v1/... for newer Formbar).
+ * Formbar allows: the user themselves, or a principal with global.users.manage.
+ * GET /api/user/{id}/transactions (paginated; also tries /api/v1/...).
+ * @param {object} [options]
+ * @param {boolean} [options.usedDedicatedKey] - whether apiKey is EBANK_API_KEY (for error hints)
+ * @param {number} [options.pageLimit=100]
+ * @param {number} [options.maxPages=20]
  * @returns {Promise<{ok: boolean, transactions?: any, error?: string, status?: number}>}
  */
-async function getUserTransactions(formbarBaseUrl, apiKey, userId) {
+async function getUserTransactions(formbarBaseUrl, apiKey, userId, options = {}) {
     if (userId == null || userId === '') {
         return { ok: false, error: 'Missing user id' };
     }
     const base = String(formbarBaseUrl || '').replace(/\/$/, '');
     if (!base) return { ok: false, error: 'Missing Formbar URL' };
+    if (!String(apiKey || '').trim()) {
+        return {
+            ok: false,
+            error: 'Missing API key — set EBANK_API_KEY (preferred) or API_KEY in .env'
+        };
+    }
 
-    const paths = [
+    const usedDedicatedKey = !!options.usedDedicatedKey;
+    const pageLimit = Math.min(100, Math.max(1, parseInt(options.pageLimit, 10) || 100));
+    const maxPages = Math.min(50, Math.max(1, parseInt(options.maxPages, 10) || 20));
+    const headers = formbarAuthHeaders(apiKey);
+
+    const pathBases = [
         `${base}/api/user/${encodeURIComponent(userId)}/transactions`,
         `${base}/api/v1/user/${encodeURIComponent(userId)}/transactions`
     ];
 
     let lastError = 'No response';
-    for (const url of paths) {
+    let workingBase = null;
+
+    for (const pathBase of pathBases) {
+        // Probe first page (also try api as query param — Formbar accepts req.query.api)
+        const probeUrl = `${pathBase}?limit=${pageLimit}&offset=0&api=${encodeURIComponent(String(apiKey).trim())}`;
         try {
-            const res = await fetch(url, {
-                headers: {
-                    api: apiKey || '',
-                    API: apiKey || '',
-                    Accept: 'application/json'
-                }
-            });
+            const res = await fetch(probeUrl, { headers });
             if (!res.ok) {
-                lastError = `HTTP ${res.status}`;
+                lastError = authErrorHint(res.status, usedDedicatedKey);
                 if (res.status === 404) continue;
                 return { ok: false, error: lastError, status: res.status };
             }
-            const data = await res.json();
-            return { ok: true, transactions: data, status: res.status };
+            workingBase = pathBase;
+            const first = await res.json();
+            const all = [];
+            const pushPage = (payload) => {
+                const chunk = Array.isArray(payload)
+                    ? payload
+                    : (payload && payload.data && Array.isArray(payload.data.transactions)
+                        ? payload.data.transactions
+                        : (payload && Array.isArray(payload.transactions) ? payload.transactions : []));
+                all.push(...chunk);
+                return payload && payload.data && payload.data.pagination
+                    ? payload.data.pagination
+                    : null;
+            };
+
+            let pagination = pushPage(first);
+            let offset = pageLimit;
+            let page = 1;
+            while (pagination && pagination.hasMore && page < maxPages) {
+                const pageUrl = `${workingBase}?limit=${pageLimit}&offset=${offset}&api=${encodeURIComponent(String(apiKey).trim())}`;
+                const pageRes = await fetch(pageUrl, { headers });
+                if (!pageRes.ok) break;
+                const pageData = await pageRes.json();
+                pagination = pushPage(pageData);
+                offset += pageLimit;
+                page += 1;
+            }
+
+            return {
+                ok: true,
+                transactions: {
+                    success: true,
+                    data: {
+                        transactions: all,
+                        displayName: first && first.data && first.data.displayName,
+                        pagination: {
+                            total: pagination && pagination.total != null ? pagination.total : all.length,
+                            limit: pageLimit,
+                            offset: 0,
+                            hasMore: !!(pagination && pagination.hasMore)
+                        }
+                    }
+                },
+                status: 200
+            };
         } catch (err) {
             lastError = err.message || 'Request failed';
         }
