@@ -18,8 +18,13 @@ CREATE TABLE credit_loans (
 
 CREATE TABLE credit_limits (
     borrower_formbar_user_id INTEGER PRIMARY KEY,
-    current_limit INTEGER DEFAULT 500,
-    paid_off_count INTEGER DEFAULT 0
+    current_limit INTEGER DEFAULT 250,
+    paid_off_count INTEGER DEFAULT 0,
+    deposit_posted INTEGER NOT NULL DEFAULT 0,
+    deposit_held INTEGER NOT NULL DEFAULT 0,
+    deposit_refunded INTEGER NOT NULL DEFAULT 0,
+    -- Lifetime repayments at last credit reset; only (SUM(amount_paid) - baseline) counts toward new limit growth
+    repaid_baseline INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE checks (

@@ -101,7 +101,9 @@ const CHECK_FUNDS = USE_CHECK_POOL
     : { id: LENDER_USER_ID, type: 'user' };
 const CHECK_FUNDS_LABEL = USE_CHECK_POOL ? 'FormBank pool' : 'FormBank';
 /** Starting credit limit and amount added each time the repayment threshold is met. */
-const CREDIT_LIMIT_STEP = Math.max(1, parseInt(process.env.CREDIT_LIMIT_STEP, 10) || 500);
+const CREDIT_LIMIT_STEP = Math.max(1, parseInt(process.env.CREDIT_LIMIT_STEP, 10) || accounting.CREDIT_LIMIT_STEP_DEFAULT);
+/** One-time security deposit required before borrowing. */
+const LOAN_DEPOSIT_AMOUNT = accounting.LOAN_DEPOSIT_AMOUNT;
 /** Public Formbar origin for profile links (defaults to production Formbar). */
 const FORMBAR_URL = (process.env.FORMBAR_URL || 'https://formbar.yorktechapps.com')
     .replace(/\/oauth\/?$/, '')
@@ -149,18 +151,40 @@ function isAuthenticated(req, res, next) {
 
 // Database helper functions for credit system
 function getCreditLimit(userId, callback) {
-    db.get('SELECT current_limit, paid_off_count FROM credit_limits WHERE borrower_formbar_user_id = ?', [userId], (err, row) => {
-        if (err) return callback(err, null);
-        if (!row) {
-            // Initialize with default limit
-            db.run('INSERT INTO credit_limits (borrower_formbar_user_id, current_limit, paid_off_count) VALUES (?, ?, 0)', [userId, CREDIT_LIMIT_STEP], function(err) {
-                if (err) return callback(err, null);
-                callback(null, { current_limit: CREDIT_LIMIT_STEP, paid_off_count: 0 });
-            });
-        } else {
-            callback(null, row);
+    db.get(
+        `SELECT current_limit, paid_off_count,
+                COALESCE(deposit_posted, 0) AS deposit_posted,
+                COALESCE(deposit_held, 0) AS deposit_held,
+                COALESCE(deposit_refunded, 0) AS deposit_refunded,
+                COALESCE(repaid_baseline, 0) AS repaid_baseline
+         FROM credit_limits WHERE borrower_formbar_user_id = ?`,
+        [userId],
+        (err, row) => {
+            if (err) return callback(err, null);
+            if (!row) {
+                db.run(
+                    `INSERT INTO credit_limits
+                     (borrower_formbar_user_id, current_limit, paid_off_count,
+                      deposit_posted, deposit_held, deposit_refunded, repaid_baseline)
+                     VALUES (?, ?, 0, 0, 0, 0, 0)`,
+                    [userId, CREDIT_LIMIT_STEP],
+                    function(insertErr) {
+                        if (insertErr) return callback(insertErr, null);
+                        callback(null, {
+                            current_limit: CREDIT_LIMIT_STEP,
+                            paid_off_count: 0,
+                            deposit_posted: 0,
+                            deposit_held: 0,
+                            deposit_refunded: 0,
+                            repaid_baseline: 0
+                        });
+                    }
+                );
+            } else {
+                callback(null, row);
+            }
         }
-    });
+    );
 }
 
 function getActiveLoan(userId, callback) {
@@ -171,17 +195,121 @@ function getLoanHistory(userId, callback) {
     db.all('SELECT * FROM credit_loans WHERE borrower_formbar_user_id = ? ORDER BY created_at DESC', [userId], callback);
 }
 
-function createLoan(userId, principal, callback) {
-    const interestRate = accounting.LOAN_INTEREST_RATE;
-    const amountOwed = accounting.loanAmountOwed(principal);
+function createLoan(userId, principal, currentLimit, callback) {
+    const interestRate = accounting.loanInterestRate(currentLimit);
+    const amountOwed = accounting.loanAmountOwed(principal, interestRate);
     db.run(
         'INSERT INTO credit_loans (borrower_formbar_user_id, principal, interest_rate, amount_owed, amount_paid, status) VALUES (?, ?, ?, ?, 0, ?)',
         [userId, principal, interestRate, amountOwed, 'active'],
         function(err) {
             if (err) return callback(err, null);
-            callback(null, { id: this.lastID, principal, amountOwed });
+            callback(null, { id: this.lastID, principal, amountOwed, interestRate });
         }
     );
+}
+
+/**
+ * After a loan is fully paid and credit limit recalculated, refund any releasable deposit.
+ * @returns {Promise<{ refunded: number, error?: string }>}
+ */
+async function maybeRefundLoanDeposit(userId) {
+    return new Promise((resolve) => {
+        getCreditLimit(userId, async (err, limitRow) => {
+            if (err || !limitRow) {
+                return resolve({ refunded: 0, error: err ? err.message : 'No credit limit row' });
+            }
+            const refundNet = accounting.depositRefundNet(
+                limitRow.deposit_held,
+                limitRow.deposit_posted,
+                limitRow.current_limit
+            );
+            if (refundNet <= 0) {
+                return resolve({ refunded: 0 });
+            }
+
+            const refundGross = accounting.sendAmountForNet(refundNet);
+            let ledgerId = null;
+            try {
+                if (ledger) {
+                    const pending = await ledger.beginPending({
+                        idempotency_key: `loan_deposit_refund:${userId}:${limitRow.deposit_refunded}:${refundNet}`,
+                        type: 'loan_deposit_refund',
+                        actor_formbar_user_id: LENDER_USER_ID,
+                        counterparty_formbar_user_id: userId,
+                        requested_amount: refundNet,
+                        gross_transfer_amount: refundGross,
+                        net_amount: refundNet,
+                        tax_amount: accounting.taxOnGross(refundGross),
+                        metadata: {
+                            deposit_held_before: limitRow.deposit_held,
+                            current_limit: limitRow.current_limit
+                        }
+                    });
+                    ledgerId = pending.id;
+                    if (pending.existing && pending.row && pending.row.status === 'completed') {
+                        return resolve({ refunded: refundNet });
+                    }
+                }
+            } catch (ledgerErr) {
+                return resolve({ refunded: 0, error: 'Failed to record deposit refund' });
+            }
+
+            const result = await formbarApi.transferDigipogs(
+                socket,
+                LENDER_USER_ID,
+                userId,
+                refundGross,
+                `FormBank loan deposit refund: ${refundNet} digipogs net`,
+                LENDER_PIN
+            );
+
+            if (!result.success) {
+                if (ledger && ledgerId) {
+                    const outcome = result.outcome || 'failure';
+                    if (outcome === 'timeout' || outcome === 'unknown') {
+                        await ledger.markReconciliationRequired(
+                            ledgerId,
+                            result.error || 'Deposit refund outcome unknown',
+                            outcome
+                        );
+                    } else {
+                        await ledger.markFailed(ledgerId, result.error || 'Transfer failed', 'failure');
+                    }
+                }
+                return resolve({ refunded: 0, error: result.error || 'Deposit refund transfer failed' });
+            }
+
+            db.run(
+                `UPDATE credit_limits
+                 SET deposit_held = deposit_held - ?, deposit_refunded = deposit_refunded + ?
+                 WHERE borrower_formbar_user_id = ? AND deposit_held >= ?`,
+                [refundNet, refundNet, userId, refundNet],
+                async function(updateErr) {
+                    if (updateErr || this.changes === 0) {
+                        if (ledger && ledgerId) {
+                            await ledger.markReconciliationRequired(
+                                ledgerId,
+                                'Refund transferred but deposit_held update failed',
+                                'success'
+                            );
+                        }
+                        return resolve({
+                            refunded: 0,
+                            error: 'Refund sent but failed to update deposit record'
+                        });
+                    }
+                    if (ledger && ledgerId) {
+                        try {
+                            await ledger.markCompleted(ledgerId);
+                        } catch (markErr) {
+                            console.error('Failed to complete deposit refund ledger:', markErr.message);
+                        }
+                    }
+                    resolve({ refunded: refundNet });
+                }
+            );
+        });
+    });
 }
 
 function updateLoanPayment(loanId, additionalPayment, callback) {
@@ -220,9 +348,12 @@ function updateCreditLimitFromRepayments(userId, callback) {
             (err, row) => {
                 if (err) return callback(err, null);
 
-                const totalRepaid = row && typeof row.total_repaid === 'number'
+                const lifetimeRepaid = row && typeof row.total_repaid === 'number'
                     ? row.total_repaid
                     : 0;
+                const repaidBaseline = limitRow.repaid_baseline || 0;
+                // After npm run reset-credit, only repayments beyond the baseline grow the limit
+                const totalRepaid = Math.max(0, lifetimeRepaid - repaidBaseline);
 
                 const progress = accounting.computeCreditLimitProgress(
                     CREDIT_LIMIT_STEP,
@@ -248,7 +379,7 @@ function updateCreditLimitFromRepayments(userId, callback) {
                         if (ledger) {
                             const bump = progress.newLimit - previousLimit;
                             ledger.insertCompleted({
-                                idempotency_key: `credit_limit:${userId}:${progress.newIncreaseCount}`,
+                                idempotency_key: `credit_limit:${userId}:${repaidBaseline}:${progress.newIncreaseCount}`,
                                 type: 'credit_limit_change',
                                 actor_formbar_user_id: userId,
                                 requested_amount: bump,
@@ -258,7 +389,9 @@ function updateCreditLimitFromRepayments(userId, callback) {
                                     previousLimit,
                                     newLimit: progress.newLimit,
                                     increments: progress.increments,
-                                    totalRepaid
+                                    totalRepaid,
+                                    lifetimeRepaid,
+                                    repaidBaseline
                                 }
                             }).catch((ledgerErr) => {
                                 console.error('Failed to record credit_limit_change:', ledgerErr.message);
@@ -1016,10 +1149,21 @@ app.get('/credit', isAuthenticated, (req, res) => {
                     const board = highscores || [];
                     const ids = board.map((r) => r.user_id);
                     resolveUserNames(ids).then((userNames) => {
+                        const depositPosted = limitData.deposit_posted || 0;
+                        const depositHeld = limitData.deposit_held || 0;
+                        const depositRefunded = limitData.deposit_refunded || 0;
+                        const nextRate = accounting.loanInterestRate(limitData.current_limit);
                         res.render('credit', {
                             user: req.session.user,
                             userId,
                             creditLimit: limitData.current_limit,
+                            creditLimitStep: CREDIT_LIMIT_STEP,
+                            depositRequired: LOAN_DEPOSIT_AMOUNT,
+                            depositPosted,
+                            depositHeld,
+                            depositRefunded,
+                            depositReady: depositPosted >= LOAN_DEPOSIT_AMOUNT,
+                            nextInterestRate: nextRate,
                             activeLoan: activeLoan,
                             loanHistory: loanHistory || [],
                             highscores: board,
@@ -1030,6 +1174,113 @@ app.get('/credit', isAuthenticated, (req, res) => {
                 });
             });
         });
+    });
+});
+
+app.post('/credit/deposit', isAuthenticated, async (req, res) => {
+    const userId = req.session.userId;
+    if (!userId) {
+        return res.status(400).json({ error: 'User ID not found in session' });
+    }
+
+    const borrowerPin = req.body.pin;
+    if (borrowerPin === undefined || borrowerPin === null || String(borrowerPin).trim() === '') {
+        return res.status(400).json({ error: 'PIN is required to post the loan deposit.' });
+    }
+
+    getCreditLimit(userId, async (err, limitData) => {
+        if (err) {
+            return res.status(500).json({ error: 'Database error' });
+        }
+        if ((limitData.deposit_posted || 0) >= LOAN_DEPOSIT_AMOUNT) {
+            return res.status(400).json({ error: 'Loan deposit already posted.' });
+        }
+
+        let ledgerId = null;
+        try {
+            if (ledger) {
+                const pending = await ledger.beginPending({
+                    idempotency_key: `loan_deposit:${userId}`,
+                    type: 'loan_deposit',
+                    actor_formbar_user_id: userId,
+                    counterparty_formbar_user_id: LENDER_USER_ID,
+                    requested_amount: LOAN_DEPOSIT_AMOUNT,
+                    gross_transfer_amount: LOAN_DEPOSIT_AMOUNT,
+                    net_amount: accounting.netAfterTax(LOAN_DEPOSIT_AMOUNT),
+                    tax_amount: accounting.taxOnGross(LOAN_DEPOSIT_AMOUNT)
+                });
+                ledgerId = pending.id;
+                if (pending.existing && pending.row && pending.row.status === 'completed') {
+                    return res.json({
+                        success: true,
+                        message: `Loan deposit of ${LOAN_DEPOSIT_AMOUNT} digipogs already posted.`
+                    });
+                }
+            }
+        } catch (ledgerErr) {
+            return res.status(500).json({ error: 'Failed to record pending deposit' });
+        }
+
+        const result = await formbarApi.transferDigipogs(
+            socket,
+            userId,
+            LENDER_USER_ID,
+            LOAN_DEPOSIT_AMOUNT,
+            `FormBank loan security deposit: ${LOAN_DEPOSIT_AMOUNT} digipogs`,
+            borrowerPin
+        );
+
+        if (!result.success) {
+            const outcome = result.outcome || 'failure';
+            if (ledger && ledgerId) {
+                if (outcome === 'timeout' || outcome === 'unknown') {
+                    await ledger.markReconciliationRequired(
+                        ledgerId,
+                        result.error || 'Deposit outcome unknown',
+                        outcome
+                    );
+                    return res.status(500).json({
+                        error: result.error || 'Transfer outcome unknown — verify manually',
+                        reconciliation: true
+                    });
+                }
+                await ledger.markFailed(ledgerId, result.error || 'Transfer failed', 'failure');
+            }
+            return res.status(500).json({ error: result.error || 'Transfer failed' });
+        }
+
+        db.run(
+            `UPDATE credit_limits
+             SET deposit_posted = ?, deposit_held = ?, deposit_refunded = 0
+             WHERE borrower_formbar_user_id = ?`,
+            [LOAN_DEPOSIT_AMOUNT, LOAN_DEPOSIT_AMOUNT, userId],
+            async function(updateErr) {
+                if (updateErr) {
+                    if (ledger && ledgerId) {
+                        await ledger.markReconciliationRequired(
+                            ledgerId,
+                            'Deposit transferred but credit_limits update failed',
+                            'success'
+                        );
+                    }
+                    return res.status(500).json({
+                        error: 'Deposit transferred but failed to record — contact support',
+                        reconciliation: true
+                    });
+                }
+                if (ledger && ledgerId) {
+                    try {
+                        await ledger.markCompleted(ledgerId);
+                    } catch (markErr) {
+                        console.error('Failed to complete deposit ledger:', markErr.message);
+                    }
+                }
+                res.json({
+                    success: true,
+                    message: `Security deposit of ${LOAN_DEPOSIT_AMOUNT} digipogs posted. You can now borrow up to your credit limit. Portions may be refunded as you repay loans and raise your limit.`
+                });
+            }
+        );
     });
 });
 
@@ -1053,17 +1304,22 @@ app.post('/credit/borrow', isAuthenticated, async (req, res) => {
             return res.status(400).json({ error: 'You already have an active loan' });
         }
 
-        // Check credit limit
+        // Check credit limit and deposit
         getCreditLimit(userId, (err, limitData) => {
             if (err) {
                 return res.status(500).json({ error: 'Database error' });
+            }
+            if ((limitData.deposit_posted || 0) < LOAN_DEPOSIT_AMOUNT) {
+                return res.status(400).json({
+                    error: `A security deposit of ${LOAN_DEPOSIT_AMOUNT} digipogs is required before borrowing.`
+                });
             }
             if (principal > limitData.current_limit) {
                 return res.status(400).json({ error: `Loan amount exceeds your credit limit of ${limitData.current_limit} digipogs` });
             }
 
             // Create loan record first (before transfer)
-            createLoan(userId, principal, async (err, loan) => {
+            createLoan(userId, principal, limitData.current_limit, async (err, loan) => {
                 if (err) {
                     return res.status(500).json({ error: 'Failed to create loan record' });
                 }
@@ -1109,7 +1365,7 @@ app.post('/credit/borrow', isAuthenticated, async (req, res) => {
                         }
                         return res.json({
                             success: true,
-                            message: `Loan of ${principal} digipogs issued successfully. You received ${accounting.netAfterTax(principal)} digipogs (after 10% tax). You owe ${loan.amountOwed} digipogs.`
+                            message: `Loan of ${principal} digipogs issued successfully. You received ${accounting.netAfterTax(principal)} digipogs (after 10% tax). Interest rate ${(loan.interestRate * 100).toFixed(0)}%. You owe ${loan.amountOwed} digipogs.`
                         });
                     }
 
@@ -1303,18 +1559,32 @@ async function processLoanRepayment(req, res, userId, activeLoan, repaymentAmoun
             }
         }
 
-        updateCreditLimitFromRepayments(userId, (limitErr, limitResult) => {
+        updateCreditLimitFromRepayments(userId, async (limitErr, limitResult) => {
             if (limitErr) {
                 console.error('Failed to update credit limit from repayments:', limitErr);
             }
             const limitIncreased = limitResult && limitResult.increased;
+            let refundMsg = '';
+            if (paymentResult.isPaid) {
+                try {
+                    const refundResult = await maybeRefundLoanDeposit(userId);
+                    if (refundResult.refunded > 0) {
+                        refundMsg = ` Deposit refund of ${refundResult.refunded} digipogs (net) sent.`;
+                    } else if (refundResult.error) {
+                        console.error('Deposit refund issue:', refundResult.error);
+                    }
+                } catch (refundErr) {
+                    console.error('Deposit refund failed:', refundErr.message);
+                }
+            }
             res.json({
                 success: true,
                 message: (isFull
                     ? `Full repayment of ${repaymentAmount} digipogs processed. Loan paid off!`
                     : `Repayment of ${repaymentAmount} digipogs processed.` +
                         (paymentResult.isPaid ? ' Loan paid off!' : '')) +
-                    (limitIncreased ? ' Your credit limit has increased.' : '')
+                    (limitIncreased ? ' Your credit limit has increased.' : '') +
+                    refundMsg
             });
         });
     });

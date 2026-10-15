@@ -243,13 +243,48 @@
                 <h3>Credit Limit</h3>
                 <div class="value"><%= creditLimit %></div>
             </div>
+            <div class="stat-card">
+                <h3>Deposit Held</h3>
+                <div class="value"><%= typeof depositHeld !== 'undefined' ? depositHeld : 0 %></div>
+            </div>
             <% if (activeLoan) { %>
             <div class="stat-card">
                 <h3>Remaining Owed</h3>
                 <div class="value"><%= activeLoan.amount_owed - activeLoan.amount_paid %></div>
             </div>
+            <% } else if (typeof nextInterestRate !== 'undefined') { %>
+            <div class="stat-card">
+                <h3>Next Loan Rate</h3>
+                <div class="value"><%= (nextInterestRate * 100).toFixed(0) %>%</div>
+            </div>
             <% } %>
         </div>
+
+        <% if (!depositReady) { %>
+        <div class="section">
+            <h2>Security Deposit Required</h2>
+            <div class="alert alert-info">
+                <strong>Before borrowing:</strong> Post a one-time security deposit of
+                <strong><%= depositRequired %></strong> digipogs. Portions may be refunded as you
+                repay loans and raise your credit limit. Remaining deposit stays with FormBank
+                if you stop repaying.
+            </div>
+            <form id="depositForm" onsubmit="return submitDeposit(event)">
+                <div class="form-group">
+                    <label for="depositPin">PIN (required for deposit)</label>
+                    <input type="password" id="depositPin" name="pin" placeholder="Your digipog PIN" required autocomplete="off">
+                </div>
+                <button type="submit" class="btn btn-primary">Post <%= depositRequired %> Digipog Deposit</button>
+            </form>
+            <div id="depositMessage" class="message"></div>
+        </div>
+        <% } else { %>
+        <div class="section">
+            <h2>Security Deposit</h2>
+            <p style="color:#555;">Posted: <%= depositPosted %> · Held: <%= depositHeld %> · Refunded: <%= depositRefunded %></p>
+            <p style="color:#666; font-size:14px;">Held deposit is collateral. Safe portions are refunded after full loan repayments when your credit limit allows.</p>
+        </div>
+        <% } %>
 
         <% if (activeLoan) { %>
         <div class="section">
@@ -283,11 +318,15 @@
             </form>
             <div id="repayMessage" class="message"></div>
         </div>
-        <% } else { %>
+        <% } else if (depositReady) { %>
         <div class="section">
             <h2>Borrow Digipogs</h2>
             <div class="alert alert-info">
-                <strong>Loan Terms:</strong> 20% interest per loan. When you borrow P digipogs, you receive 0.9*P (after 10% Formbar tax) but owe P*1.2. You can only have one active loan at a time.
+                <strong>Loan Terms:</strong> Interest is tiered by your credit limit
+                (currently <strong><%= (nextInterestRate * 100).toFixed(0) %>%</strong>).
+                Borrow P → receive 0.9×P after Formbar tax; owe ceil(P × (1 + rate)).
+                Limit starts at <%= creditLimitStep %> and grows by +<%= creditLimitStep %>.
+                One active loan at a time.
             </div>
             <form id="borrowForm" onsubmit="return submitBorrow(event)">
                 <div class="form-group">
@@ -375,6 +414,34 @@
             setTimeout(() => {
                 element.classList.remove('show');
             }, 5000);
+        }
+
+        async function submitDeposit(event) {
+            event.preventDefault();
+            const form = event.target;
+            const formData = new FormData(form);
+            const pin = (formData.get('pin') || '').toString().trim();
+            if (!pin) {
+                showMessage('depositMessage', 'PIN is required for deposit.', 'error');
+                return false;
+            }
+            try {
+                const response = await fetch('/credit/deposit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pin: pin })
+                });
+                const data = await response.json();
+                if (data.success) {
+                    showMessage('depositMessage', data.message, 'success');
+                    setTimeout(() => { window.location.reload(); }, 1500);
+                } else {
+                    showMessage('depositMessage', data.error || 'Failed to post deposit', 'error');
+                }
+            } catch (error) {
+                showMessage('depositMessage', 'Error: ' + error.message, 'error');
+            }
+            return false;
         }
 
         async function submitBorrow(event) {

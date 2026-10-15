@@ -64,6 +64,20 @@ async function applySchemaFixes(db) {
         await runAsync(db, 'ALTER TABLE checks ADD COLUMN cashed_at DATETIME');
     }
 
+    // Loan security deposit columns on credit_limits
+    if (!(await columnExists(db, 'credit_limits', 'deposit_posted'))) {
+        await runAsync(db, 'ALTER TABLE credit_limits ADD COLUMN deposit_posted INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!(await columnExists(db, 'credit_limits', 'deposit_held'))) {
+        await runAsync(db, 'ALTER TABLE credit_limits ADD COLUMN deposit_held INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!(await columnExists(db, 'credit_limits', 'deposit_refunded'))) {
+        await runAsync(db, 'ALTER TABLE credit_limits ADD COLUMN deposit_refunded INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!(await columnExists(db, 'credit_limits', 'repaid_baseline'))) {
+        await runAsync(db, 'ALTER TABLE credit_limits ADD COLUMN repaid_baseline INTEGER NOT NULL DEFAULT 0');
+    }
+
     // Resolve duplicate active loans before unique index (keep newest)
     const dupes = await allAsync(db, `
         SELECT borrower_formbar_user_id, COUNT(*) AS cnt

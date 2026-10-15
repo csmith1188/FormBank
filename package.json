@@ -5,7 +5,8 @@
   "scripts": {
     "test": "node --test test/**/*.test.js",
     "start": "node app.js",
-    "init-db": "node db/init-db.js"
+    "init-db": "node db/init-db.js",
+    "reset-credit": "node db/reset-credit.js"
   },
   "author": "C. Smith",
   "license": "ISC",

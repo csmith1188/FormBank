@@ -5,8 +5,9 @@
 ## Features
 
 ### Credit & Loans
-- **Loan system**: Borrow digipogs with a fixed 20% interest per loan
-- **Credit limits**: Start at 500 digipogs; limit increases by +500 each time your total repayments reach your current credit limit (configured via `CREDIT_LIMIT_STEP`)
+- **Loan system**: Tiered interest by credit limit (higher at low limits, lower as you grow; floor 25%)
+- **Security deposit**: 1000 digipogs required before the first loan; safe portions may be refunded after full repayments
+- **Credit limits**: Start at 250 digipogs; limit increases by +250 when repayment thresholds are met (configured via `CREDIT_LIMIT_STEP`)
 - **One active loan** per user at a time
 - **Tax-aware**: Handles Formbar’s 10% transfer tax correctly
 
@@ -57,7 +58,7 @@
    # Optional. When set, checks go through this Formbar pool (DEV transfer API).
    # Leave blank to use LENDER_USER_ID until pool send/receive is on Formbar main.
    POOL_ID=
-   CREDIT_LIMIT_STEP=500
+   CREDIT_LIMIT_STEP=250
    # Optional. Both required to show the eBank analytics section on /admin/analytics.
    # EBANK_USER_ID=28
    # EBANK_API_KEY=
@@ -74,7 +75,7 @@
 | `LENDER_USER_ID` | Formbar user ID of the lender/default account (also used for checks when `POOL_ID` is blank) |
 | `LENDER_PIN` | PIN for loan transfers from the lender account, and for check payouts (lender PIN, or pool owner PIN when `POOL_ID` is set) |
 | `POOL_ID` | Optional Formbar digipog pool ID for check deposits and payouts. Blank or `0` falls back to `LENDER_USER_ID`. Do not use the developer pool `0`. |
-| `CREDIT_LIMIT_STEP` | Starting credit limit and amount added each repayment threshold (default: 500) |
+| `CREDIT_LIMIT_STEP` | Starting credit limit and amount added each repayment threshold (default: 250) |
 | `EBANK_USER_ID` | Optional. Formbar user ID for eBank analytics. Must be set together with `EBANK_API_KEY` or the section is hidden. |
 | `EBANK_API_KEY` | Optional. API key from the eBank user’s Formbar profile (or a manager key). Required with `EBANK_USER_ID` to enable the eBank analytics section. |
 
@@ -87,6 +88,12 @@ The app is available at `http://localhost:3000` (or your configured `PORT`). Mig
 ### Tests
 ```bash
 npm test
+```
+
+### Reset credit limits
+Resets every borrower's `current_limit` to `CREDIT_LIMIT_STEP` (default 250) and `paid_off_count` to 0. Keeps `credit_loans` and `financial_transactions`. Sets `repaid_baseline` so old repayments do not immediately re-inflate limits.
+```bash
+npm run reset-credit -- --yes
 ```
 
 ## Accounting assumptions (analytics)
@@ -104,9 +111,11 @@ npm test
 ## How it works
 
 ### Credit & loans (summary)
-- Borrow **P** digipogs → receive **0.9×P** (after 10% tax), owe **P×1.2**
+- Post a **1000** digipog security deposit before borrowing (refunded in safe portions as limit grows)
+- Borrow **P** digipogs → receive **0.9×P** (after 10% tax), owe **ceil(P × (1 + tiered rate))**
+- Interest depends on current credit limit (100% at ≤250 … 25% at high limits)
 - Repayments reduce the balance and cannot exceed the remaining amount owed
-- One active loan per user; every time your total repayments reach your current credit limit, that limit increases by `CREDIT_LIMIT_STEP` (default 500)
+- One active loan per user; repayment thresholds raise the limit by `CREDIT_LIMIT_STEP` (default 250)
 
 ### Checks
 - **With receiver ID**: One transfer sender → FormBank (grossed for two tax legs + 5% FormBank fee), then FormBank → receiver (grossed so they net 100% of the amount) using `LENDER_PIN`.
@@ -119,8 +128,9 @@ npm test
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/` | Home (requires login) |
-| GET | `/credit` | Credit dashboard: limit, active loan, history |
-| POST | `/credit/borrow` | Request a loan (`amount`) |
+| GET | `/credit` | Credit dashboard: limit, deposit, active loan, history |
+| POST | `/credit/deposit` | Post 1000 digipog security deposit (`pin`) |
+| POST | `/credit/borrow` | Request a loan (`amount`); requires deposit |
 | POST | `/credit/repay` | Repay (`amount`, `pin`) |
 | POST | `/credit/repay/full` | Pay full remaining balance (`pin`) |
 | GET | `/checks` | Checks dashboard: list and write-check form |
@@ -139,7 +149,7 @@ npm test
 ## Database schema (main tables)
 
 - **credit_loans** – Loan records (borrower, principal, amount_owed, amount_paid, status, etc.)
-- **credit_limits** – Per-user borrowing limit and paid-off count
+- **credit_limits** – Per-user borrowing limit, paid-off count, and deposit_posted / deposit_held / deposit_refunded
 - **checks** – Check records: sender, receiver (nullable), amount, fee_charged, status (`completed` / `failed` / `uncashed` / `funded_unpaid`), memo, `cashed_at`, `pin_for_redemption` (cleared after redeem)
 - **financial_transactions** – Append-only ledger (types, amounts, tax/fee/principal/interest components, status, idempotency keys)
 - **financial_snapshots** – Optional daily position snapshots for historical charts

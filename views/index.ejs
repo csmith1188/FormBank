@@ -194,7 +194,7 @@
             <h2>Loans &amp; Checks for Digipogs</h2>
             <p>
                 FormBank is your gateway to flexible digipog loans and peer-to-peer checks. 
-                Borrow digipogs with simple 20% interest and watch your credit limit grow—or 
+                Borrow digipogs with tiered interest and watch your credit limit grow—or 
                 write checks to other users (or leave them open for anyone to redeem). Pay back 
                 on your own terms and send digipogs with ease.
             </p>
@@ -209,16 +209,16 @@
                 <div class="feature-icon">💰</div>
                 <h3>Simple Loans</h3>
                 <p>
-                    Borrow digipogs with a fixed 20% interest rate. Start with a 500 digipog limit 
-                    and watch it grow as you build your credit history.
+                    Borrow digipogs with tiered interest (higher at low credit limits, lower as you grow).
+                    Start with a 250 digipog limit after posting a 1000 digipog security deposit.
                 </p>
             </div>
             <div class="feature-card">
                 <div class="feature-icon">📈</div>
                 <h3>Growing Limits</h3>
                 <p>
-                    Each time you successfully pay off a loan, your credit limit increases by 500 digipogs. 
-                    Build your credit and unlock higher borrowing power.
+                    As your total repayments unlock thresholds, your credit limit increases by 250 digipogs.
+                    Build your credit and unlock higher borrowing power at better rates.
                 </p>
             </div>
             <div class="feature-card">
@@ -244,10 +244,12 @@
         <div class="info-section">
             <h2>How It Works</h2>
             <ul>
-                <li><strong>Borrow:</strong> Request a loan up to your current credit limit (starts at 500 digipogs)</li>
+                <li><strong>Deposit:</strong> Post a one-time 1000 digipog security deposit before your first loan</li>
+                <li><strong>Borrow:</strong> Request a loan up to your current credit limit (starts at 250 digipogs)</li>
                 <li><strong>Receive:</strong> Get your digipogs instantly (after Formbar's 10% transfer tax)</li>
                 <li><strong>Repay:</strong> Pay back your loan in full or partial payments at any time</li>
-                <li><strong>Grow:</strong> Every time your total repayments reach your current credit limit, that limit increases by +500 digipogs</li>
+                <li><strong>Grow:</strong> Total repayments unlock higher limits in +250 digipog steps; interest rates fall as your limit rises</li>
+                <li><strong>Deposit refunds:</strong> Safe portions of your deposit may return after full repayments as your limit grows</li>
                 <li><strong>Track:</strong> View your loan history and credit status anytime</li>
                 <li><strong>Write a check:</strong> Enter amount, your PIN, and optionally a receiver's Formbar user ID (or leave blank for anyone to redeem)</li>
                 <li><strong>Check status:</strong> View check details and a QR code for the status URL; only sender, receiver, or redeemer can access the page</li>
@@ -258,10 +260,11 @@
             <h2>Important Notes</h2>
             <ul>
                 <li>Only one active loan allowed at a time</li>
-                <li>20% interest is calculated on the principal amount</li>
+                <li>Interest is tiered by credit limit (e.g. 100% at 250 limit, down to 25% at high limits)</li>
                 <li>Formbar applies a 10% tax on all transfers (this is automatic)</li>
-                <li>You receive 90% of the loan amount, but owe the full principal + 20% interest</li>
+                <li>You receive 90% of the loan amount, but owe principal plus tiered interest</li>
                 <li>Repayments cannot exceed your remaining loan balance</li>
+                <li>A 1000 digipog deposit is required before borrowing; unpaid loans forfeit remaining held deposit</li>
                 <li>Check fee: sender pays the FormBank pool enough for Formbar’s 10% tax on both transfers plus FormBank’s net 5%; receiver gets 100% of the check amount</li>
                 <li>Blank checks: same deposit to the FormBank pool when you write; the pool pays the first redeemer the full amount via the check status page</li>
             </ul>
